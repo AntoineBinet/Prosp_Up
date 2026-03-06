@@ -339,7 +339,14 @@ def api_auth_login():
         return jsonify(ok=False, error="Identifiants requis"), 400
     with _auth_conn() as conn:
         user = conn.execute("SELECT * FROM users WHERE LOWER(username)=? AND is_active=1;", (username,)).fetchone()
-        if not user or not check_password_hash(user["password_hash"], password):
+        # v23.4: constant-time check to prevent timing-based user enumeration
+        if user:
+            pw_ok = check_password_hash(user["password_hash"], password)
+        else:
+            # Dummy hash check to keep timing consistent
+            check_password_hash("pbkdf2:sha256:600000$dummy$0" * 2, password)
+            pw_ok = False
+        if not pw_ok:
             _record_login_attempt()
             return jsonify(ok=False, error="Identifiants incorrects"), 401
         session.permanent = True
@@ -5329,6 +5336,9 @@ def api_company_update():
     uid = _uid()
     if not uid:
         return jsonify(ok=False, error="Non authentifié"), 401
+    # v23.4: Defensive check — only whitelisted column names can appear in SQL
+    _COMPANY_ALLOWED_COLS = frozenset(allowed)
+    assert all(k in _COMPANY_ALLOWED_COLS for k in fields), "Invalid column name"
     sets = ", ".join([f"{k}=?" for k in fields.keys()])
     vals = list(fields.values())
     with _conn() as conn:
