@@ -24,7 +24,7 @@ import secrets
 from services.dashboard_goals import build_goals_payload as _build_goals_payload, get_goals_config as _get_goals_config
 
 APP_DIR = Path(__file__).resolve().parent
-APP_VERSION = "23.3"
+APP_VERSION = "23.4"
 import os
 import hashlib
 
@@ -73,6 +73,7 @@ else:
 
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = True   # v23.4: requires HTTPS (Cloudflare Tunnel)
 app.config['PERMANENT_SESSION_LIFETIME'] = datetime.timedelta(days=30)
 
 # v22: Compute content hashes for static assets (auto cache busters)
@@ -96,6 +97,25 @@ _CACHE_BUSTER_RE = re.compile(r'(/static/[^"\'?]+)\?v=\d+')
 
 @app.after_request
 def _after_request(response):
+    # ── Security headers (v23.4) ──
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=()'
+    # HSTS: only when served behind Cloudflare Tunnel (HTTPS)
+    if request.is_secure or request.headers.get('X-Forwarded-Proto') == 'https':
+        response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    # CSP: restrictive but allows inline styles/scripts (needed for current architecture)
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; "
+        "connect-src 'self'; "
+        "font-src 'self'; "
+        "frame-ancestors 'self'"
+    )
+
     # Cache headers for API GET responses (30s private cache)
     if request.path.startswith('/api/') and request.method == 'GET':
         response.headers.setdefault('Cache-Control', 'private, max-age=30')
@@ -234,10 +254,17 @@ def _require_same_origin():
 
 @app.before_request
 def _require_auth():
-    """Protect all routes except login, static, and favicon."""
+    """Protect all routes except login, static, and favicon.
+    Also enforce CSRF (same-origin) on ALL mutating requests (v23.4)."""
     allowed = ('/login', '/static/', '/favicon.ico', '/api/auth/')
     if any(request.path.startswith(p) for p in allowed):
         return
+
+    # Global CSRF protection on all mutating methods (v23.4)
+    if request.method in ('POST', 'PUT', 'DELETE') and request.path.startswith('/api/'):
+        chk = _require_same_origin()
+        if chk:
+            return chk
     if not session.get('user_id'):
         if request.path.startswith('/api/'):
             return jsonify(ok=False, error="Non authentifié"), 401
@@ -273,8 +300,31 @@ def page_login():
         return redirect('/dashboard')
     return send_from_directory(APP_DIR, "login.html")
 
+# v23.4: Simple in-memory rate limiter for login (IP-based)
+_login_attempts: Dict[str, List[float]] = {}
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_WINDOW_SECONDS = 300  # 5 minutes
+
+def _check_login_rate_limit() -> bool:
+    """Returns True if rate limited."""
+    ip = request.remote_addr or "unknown"
+    now = time.time()
+    attempts = _login_attempts.get(ip, [])
+    # Clean old attempts
+    attempts = [t for t in attempts if now - t < _LOGIN_WINDOW_SECONDS]
+    _login_attempts[ip] = attempts
+    return len(attempts) >= _LOGIN_MAX_ATTEMPTS
+
+def _record_login_attempt():
+    ip = request.remote_addr or "unknown"
+    _login_attempts.setdefault(ip, []).append(time.time())
+
 @app.post("/api/auth/login")
 def api_auth_login():
+    # Rate limiting (v23.4)
+    if _check_login_rate_limit():
+        return jsonify(ok=False, error="Trop de tentatives. Réessayez dans quelques minutes."), 429
+
     payload = request.get_json(force=True, silent=True) or {}
     username = (payload.get("username") or "").strip().lower()
     password = payload.get("password") or ""
@@ -283,6 +333,7 @@ def api_auth_login():
     with _auth_conn() as conn:
         user = conn.execute("SELECT * FROM users WHERE LOWER(username)=? AND is_active=1;", (username,)).fetchone()
         if not user or not check_password_hash(user["password_hash"], password):
+            _record_login_attempt()
             return jsonify(ok=False, error="Identifiants incorrects"), 401
         session.permanent = True
         session['user_id'] = user['id']
@@ -349,8 +400,12 @@ def api_auth_change_password():
     new_pw = payload.get("new_password", "")
     if not old_pw or not new_pw:
         return jsonify(ok=False, error="Champs requis"), 400
-    if len(new_pw) < 4:
-        return jsonify(ok=False, error="Mot de passe trop court (min 4)"), 400
+    if len(new_pw) < 8:
+        return jsonify(ok=False, error="Mot de passe trop court (min 8 caractères)"), 400
+    if not any(c.isdigit() for c in new_pw):
+        return jsonify(ok=False, error="Le mot de passe doit contenir au moins un chiffre"), 400
+    if not any(c.isalpha() for c in new_pw):
+        return jsonify(ok=False, error="Le mot de passe doit contenir au moins une lettre"), 400
     with _auth_conn() as conn:
         user = conn.execute("SELECT * FROM users WHERE id=?;", (uid,)).fetchone()
         if not user or not check_password_hash(user["password_hash"], old_pw):
@@ -408,8 +463,12 @@ def api_users_save():
                              (generate_password_hash(password), uid))
             return jsonify(ok=True, action="updated")
         else:
-            if not password or len(password) < 4:
-                return jsonify(ok=False, error="Mot de passe requis (min 4 caractères)"), 400
+            if not password or len(password) < 8:
+                return jsonify(ok=False, error="Mot de passe requis (min 8 caractères, avec au moins 1 chiffre et 1 lettre)"), 400
+            if not any(c.isdigit() for c in password):
+                return jsonify(ok=False, error="Le mot de passe doit contenir au moins un chiffre"), 400
+            if not any(c.isalpha() for c in password):
+                return jsonify(ok=False, error="Le mot de passe doit contenir au moins une lettre"), 400
             dup = conn.execute("SELECT id FROM users WHERE LOWER(username)=?;", (username,)).fetchone()
             if dup:
                 return jsonify(ok=False, error="Username déjà pris"), 409
@@ -4891,12 +4950,20 @@ def _recompute_last_push_dates(conn: sqlite3.Connection, prospect_id: int) -> Di
     if row and row["sentAt"]:
         out["pushLinkedInSentAt"] = str(row["sentAt"])
 
-    # update prospects table if columns exist
-    conn.execute("UPDATE prospects SET pushEmailSentAt=? WHERE id=?;", (out["pushEmailSentAt"], prospect_id))
-    try:
-        conn.execute("UPDATE prospects SET pushLinkedInSentAt=? WHERE id=?;", (out["pushLinkedInSentAt"], prospect_id))
-    except sqlite3.OperationalError:
-        pass
+    # update prospects table if columns exist (v23.4: scope by owner_id for safety)
+    uid = _uid()
+    if uid:
+        conn.execute("UPDATE prospects SET pushEmailSentAt=? WHERE id=? AND owner_id=?;", (out["pushEmailSentAt"], prospect_id, uid))
+        try:
+            conn.execute("UPDATE prospects SET pushLinkedInSentAt=? WHERE id=? AND owner_id=?;", (out["pushLinkedInSentAt"], prospect_id, uid))
+        except sqlite3.OperationalError:
+            pass
+    else:
+        conn.execute("UPDATE prospects SET pushEmailSentAt=? WHERE id=?;", (out["pushEmailSentAt"], prospect_id))
+        try:
+            conn.execute("UPDATE prospects SET pushLinkedInSentAt=? WHERE id=?;", (out["pushLinkedInSentAt"], prospect_id))
+        except sqlite3.OperationalError:
+            pass
     return out
 
 @app.post("/api/push-logs/undo_last")
@@ -5525,29 +5592,36 @@ def api_ia_enrichment_log():
 
 @app.get("/api/health")
 def api_health():
-    current_db = _current_user_db_path()
-    info = {
-        "db_path": str(current_db),
-        "db_exists": current_db.exists(),
-        "central_db_path": str(DB_PATH),
-        "per_user_db": str(current_db) != str(DB_PATH),
-    }
+    """Health check endpoint. Sensitive details only for admins (v23.4)."""
+    info: Dict[str, Any] = {"status": "ok", "version": APP_VERSION}
+    is_admin = False
+    user = _get_current_user()
+    if user and user.get('role') == 'admin':
+        is_admin = True
+
+    _table_names = ("prospects", "companies", "push_logs", "candidates")
     try:
         with _conn() as con:
             cur = con.cursor()
-            # Best-effort counts: only if tables exist
-            def _count(table: str) -> int | None:
+            for tbl in _table_names:
                 try:
-                    return int(cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                    info[f"{tbl}_count"] = int(cur.execute(
+                        f"SELECT COUNT(*) FROM {tbl}"  # noqa: table names are hardcoded above
+                    ).fetchone()[0])
                 except Exception:
-                    return None
-
-            info["prospects_count"] = _count("prospects")
-            info["companies_count"] = _count("companies")
-            info["push_logs_count"] = _count("push_logs")
-            info["candidates_count"] = _count("candidates")
+                    info[f"{tbl}_count"] = None
     except Exception as e:
-        info["error"] = str(e)
+        info["db_error"] = "unavailable"
+        if is_admin:
+            info["db_error_detail"] = str(e)
+
+    # Only expose paths to admin users
+    if is_admin:
+        current_db = _current_user_db_path()
+        info["db_path"] = str(current_db)
+        info["db_exists"] = current_db.exists()
+        info["per_user_db"] = str(current_db) != str(DB_PATH)
+
     return jsonify(info)
 
 @app.get("/api/data")

@@ -6674,10 +6674,14 @@ function showOnboardingIfNeeded() {
 }
 
 // ====== Bootstrap multi-pages ======
-const APP_BUILD = '2026.03.02-01';
+const APP_BUILD = '2026.03.06-01';
 
 function ensureBuildIndicator() {
     try {
+        // v23.4: Only show build badge in local/dev environments
+        const isProduction = /prospup\.work$/i.test(window.location.hostname);
+        if (isProduction) return;
+
         const indicatorId = 'appBuildIndicator';
         let badge = document.getElementById(indicatorId);
         if (!badge) {
