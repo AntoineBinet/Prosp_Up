@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0f172a">
+<link rel="manifest" href="/static/manifest.json">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+<link rel="icon" href="/static/favicon.ico">
+  <title>ProspUp — Aide</title>
+<link rel="stylesheet" href="/static/css/style.css?v=2103">
+</head>
+<body data-page="help">
+  <div class="container">
+    <header>
+      <h1><img src="/static/logo-up-technologies.png" alt="Up Technologies" class="header-logo-app"> ProspUp — Aide</h1>
+      <p class="header-subtitle">Guide d'utilisation — simple, clair, actionnable.</p>
+    </header>
+
+    <div class="main-layout">
+                        <aside class="sidebar"></aside>
+
+      <main class="content">
+        <div class="content-header">
+          <div class="content-title">Chapitres</div>
+        </div>
+
+        <div class="card help-toc">
+          <a href="#demarrage">1. Démarrage rapide</a>
+          <a href="#dashboard">2. Dashboard</a>
+          <a href="#prospects">3. Prospects</a>
+          <a href="#fiche-prospect">4. Fiche prospect détaillée</a>
+          <a href="#scrapping-ia">5. Scrapping IA (enrichissement)</a>
+          <a href="#entreprises">6. Entreprises</a>
+          <a href="#fiche-entreprise">7. Fiche entreprise détaillée</a>
+          <a href="#focus">8. Focus & relances</a>
+          <a href="#calendrier">9. Calendrier</a>
+          <a href="#sourcing">10. Sourcing candidats</a>
+          <a href="#fiche-candidat">11. Fiche candidat détaillée</a>
+          <a href="#push">12. Push & envoi d'emails</a>
+          <a href="#categories-push">13. Catégories Push</a>
+          <a href="#recherche">14. Recherche globale</a>
+          <a href="#stats">15. Statistiques</a>
+          <a href="#rapport">16. Rapport hebdomadaire</a>
+          <a href="#kpi">17. KPI & export Excel</a>
+          <a href="#metiers">18. Référentiel métiers</a>
+          <a href="#doublons">19. Doublons</a>
+          <a href="#snapshots">20. Snapshots & restauration</a>
+          <a href="#parametres">21. Paramètres & exports</a>
+          <a href="#mises-a-jour">22. Système de mises à jour</a>
+          <a href="#raccourcis">23. Raccourcis & interface</a>
+          <a href="#bonnes-pratiques">24. Bonnes pratiques</a>
+        </div>
+
+        <!-- 1. Démarrage rapide -->
+        <div class="card help-section" id="demarrage">
+          <h3>1) Démarrage rapide</h3>
+          <ol>
+            <li>Lancez <strong>app.py</strong> (double-clic sur <code>start.bat</code> ou commande <code>python app.py</code>).</li>
+            <li>Ouvrez l'URL locale affichée (généralement <strong>http://127.0.0.1:8000</strong>).</li>
+            <li>Ajoutez quelques entreprises puis des prospects (ou importez vos données JSON/Excel).</li>
+          </ol>
+          <div class="muted">Les données sont stockées localement dans une base SQLite (sur votre PC). Rien n'est envoyé sur Internet. Un snapshot automatique est créé chaque jour au premier lancement.</div>
+        </div>
+
+        <!-- 2. Dashboard -->
+        <div class="card help-section" id="dashboard">
+          <h3>2) Dashboard</h3>
+          <p>Votre <strong>tableau de bord quotidien</strong> pour voir en un coup d'œil l'état de votre activité :</p>
+          <ul>
+            <li><strong>KPI du jour</strong> : nombre de prospects, push envoyés, RDV planifiés, relances en retard, avec indicateurs de tendance (↑/↓) par rapport à la période précédente.</li>
+            <li><strong>Graphique semaine</strong> : activité push et notes d'appel sur les derniers jours.</li>
+            <li><strong>Relances en retard</strong> : liste directe des prospects dont le suivi est dépassé, avec accès rapide à la fiche.</li>
+            <li><strong>Fil d'activité</strong> : flux chronologique de vos dernières actions (push, notes, changements de statut).</li>
+            <li><strong>RDV à venir</strong> : prochains rendez-vous planifiés.</li>
+            <li><strong>Pipeline</strong> : répartition visuelle de vos prospects par statut.</li>
+          </ul>
+        </div>
+
+        <!-- 3. Prospects -->
+        <div class="card help-section" id="prospects">
+          <h3>3) Prospects</h3>
+          <p>La page principale de gestion de vos prospects (managers, responsables, décideurs chez vos clients potentiels).</p>
+          <ul>
+            <li><strong>Filtres avancés</strong> : recherche texte, entreprise, statut, pertinence (1–5 étoiles), relance (due / a une date / aucune), "avec téléphone", "avec email", "push envoyé".</li>
+            <li><strong>Tri</strong> : cliquez sur les en-têtes de colonnes (Nom, Entreprise, Pertinence, Statut, Date de push…).</li>
+            <li><strong>Sélection multiple</strong> : cochez plusieurs prospects pour appliquer un statut ou une pertinence en masse, exporter, ou supprimer.</li>
+            <li><strong>Vue Tableau / Kanban</strong> : basculez entre une vue tableau classique et une vue <strong>Kanban</strong> qui organise les prospects par statut sous forme de colonnes glisser-déposer.</li>
+            <li><strong>Vues sauvegardées</strong> : enregistrez vos combinaisons de filtres et tris favorites pour les retrouver en un clic. Créez autant de vues que nécessaire (ex: "Mes prospects chauds Lyon", "Relances de la semaine").</li>
+            <li><strong>Vue Contacts</strong> : activez le mode contacts (<em>?contacts=1</em> dans la sidebar) pour un affichage orienté annuaire avec téléphone et email en avant.</li>
+            <li><strong>Export</strong> : export Excel (.xlsx) de la liste filtrée avec toutes les colonnes et données enrichies.</li>
+          </ul>
+        </div>
+
+        <!-- 4. Fiche prospect détaillée -->
+        <div class="card help-section" id="fiche-prospect">
+          <h3>4) Fiche prospect détaillée</h3>
+          <p>Cliquez sur un prospect pour ouvrir sa fiche complète avec plusieurs onglets :</p>
+          <ul>
+            <li><strong>Infos</strong> : nom, fonction, entreprise, téléphone, email, LinkedIn, pertinence (étoiles), statut, tags techniques, notes libres.</li>
+            <li><strong>Photo</strong> : uploadez une photo du prospect pour le reconnaître facilement.</li>
+            <li><strong>Historique</strong> : timeline chronologique de toutes les interactions — push envoyés, notes d'appel, enrichissements IA.</li>
+            <li><strong>Relance</strong> : définissez la prochaine date de relance (<em>nextFollowUp</em>). Le prospect apparaîtra dans la page Focus.</li>
+            <li><strong>Catégorie Push</strong> : associez une catégorie push au prospect pour que le bon template Outlook s'ouvre automatiquement lors de l'envoi.</li>
+            <li><strong>Meilleurs candidats</strong> : l'app compare automatiquement les tags du prospect avec les compétences de vos candidats et affiche les meilleurs matchs (score de correspondance en %).</li>
+            <li><strong>Onglet RDV</strong> (si statut "Rendez-vous" ou "Rencontré") : <strong>checklist de qualification RDV</strong> avec des thèmes de discussion pré-configurés, barre de progression, et cases à cocher pour préparer et suivre vos rendez-vous.</li>
+            <li><strong>Actions rapides</strong> : bouton email (copie + ouverture template Outlook), vCard, scrapping IA, marquer comme fait.</li>
+          </ul>
+        </div>
+
+        <!-- 5. Scrapping IA -->
+        <div class="card help-section" id="scrapping-ia">
+          <h3>5) Scrapping IA (enrichissement)</h3>
+          <p>Enrichissez vos fiches <strong>prospect</strong>, <strong>entreprise</strong> et <strong>candidat</strong> grâce à l'intelligence artificielle. Le processus est en <strong>2 clics</strong> :</p>
+          <ol>
+            <li><strong>1er clic sur "🤖 Scrapping IA"</strong> : un prompt optimisé et pré-rempli avec les données actuelles de la fiche est copié dans votre presse-papier. Collez-le dans votre IA favorite (Perplexity, ChatGPT, Comet, GenSpark…).</li>
+            <li><strong>2e clic sur "📥 Coller retour IA"</strong> : une modale s'ouvre pour coller le résultat de l'IA. Le système <strong>analyse automatiquement</strong> le texte retourné, détecte les champs (fonction, téléphone, email, LinkedIn, tags, notes…) et les affiche en prévisualisation.</li>
+          </ol>
+          <p>Vous pouvez <strong>accepter ou ignorer chaque champ</strong> individuellement avant d'appliquer. L'enrichissement est tracé dans la timeline de l'entité avec le nombre de champs mis à jour.</p>
+          <ul>
+            <li><strong>Prospect</strong> : enrichit la fonction, téléphone, email, LinkedIn, tags techniques, métier, pertinence, notes, et infos entreprise.</li>
+            <li><strong>Entreprise</strong> : enrichit le secteur, effectif, téléphone standard, tags, notes d'activité, et peut détecter des <strong>managers clés</strong> à créer automatiquement comme nouveaux prospects.</li>
+            <li><strong>Candidat</strong> : enrichit le rôle, compétences techniques, séniorité, localisation, LinkedIn, disponibilité, et TJM.</li>
+          </ul>
+          <div class="muted">Le prompt est optimisé pour le secteur systèmes embarqués / électronique / ingénierie et utilise les tags de votre référentiel métiers.</div>
+        </div>
+
+        <!-- 6. Entreprises -->
+        <div class="card help-section" id="entreprises">
+          <h3>6) Entreprises</h3>
+          <p>La liste de vos entreprises clientes / cibles, avec vue résumée :</p>
+          <ul>
+            <li><strong>Groupe + Site</strong> : organisez par groupe (ex: "Renault") et site/localisation (ex: "Vénissieux").</li>
+            <li><strong>Tags techniques</strong> : stockez la stack technique de l'entreprise (C/C++, FPGA, AUTOSAR…). Ces tags sont utilisés par le moteur de matching sourcing.</li>
+            <li><strong>Notes</strong> : contexte libre, interlocuteurs, pistes commerciales.</li>
+            <li><strong>Résumé rapide</strong> : nombre de prospects, dernier push, RDV planifiés.</li>
+            <li><strong>Fiche popup</strong> : ouvrez la fiche détaillée depuis la liste, sans quitter l'écran entreprises.</li>
+            <li><strong>Scrapping IA</strong> : même workflow en 2 clics que pour les prospects.</li>
+          </ul>
+        </div>
+
+        <!-- 7. Fiche entreprise détaillée -->
+        <div class="card help-section" id="fiche-entreprise">
+          <h3>7) Fiche entreprise détaillée</h3>
+          <p>La fiche détaillée s'ouvre en popup depuis la page <code>/entreprises</code> et offre une vue complète de l'entreprise :</p>
+          <ul>
+            <li><strong>Informations</strong> : groupe, site, téléphone, tags, secteurs, notes — tout modifiable en ligne.</li>
+            <li><strong>Prospects liés</strong> : liste de tous les prospects rattachés à cette entreprise, avec accès direct à chaque fiche.</li>
+            <li><strong>Opportunités</strong> : gérez vos <strong>opportunités commerciales</strong> par entreprise. Chaque opportunité a un titre, un stade (Identification → Qualification → Proposition → Négociation → Gagné / Perdu), un candidat associé, un montant, et des notes. Idéal pour suivre vos placements en cours.</li>
+            <li><strong>Timeline</strong> : historique chronologique de toutes les interactions — push, notes de prospects, événements, enrichissements IA.</li>
+            <li><strong>Événements</strong> : ajoutez des événements manuels à la timeline (rencontres, appels, infos).</li>
+          </ul>
+        </div>
+
+        <!-- 8. Focus & relances -->
+        <div class="card help-section" id="focus">
+          <h3>8) Focus & relances</h3>
+          <p>La page <strong>Focus</strong> est votre <strong>to-do de prospection</strong>. Elle centralise tous les prospects ayant une date de relance (<em>nextFollowUp</em>) définie :</p>
+          <ul>
+            <li><strong>Segments</strong> : en retard (rouge), aujourd'hui (orange), demain, cette semaine, plus tard.</li>
+            <li><strong>Actions rapides</strong> : décaler la relance, marquer "fait" (supprime la date de relance), ouvrir la fiche prospect.</li>
+            <li><strong>Compteurs</strong> : nombre de relances par segment pour prioriser votre journée.</li>
+          </ul>
+          <div class="muted">Conseil : à chaque interaction avec un prospect, définissez systématiquement la prochaine relance. Votre Focus devient votre agenda de prospection.</div>
+        </div>
+
+        <!-- 9. Calendrier -->
+        <div class="card help-section" id="calendrier">
+          <h3>9) Calendrier</h3>
+          <p>Vue calendrier mensuelle de vos <strong>RDV planifiés</strong> et <strong>relances</strong> :</p>
+          <ul>
+            <li>Les RDV (prospects avec statut "Rendez-vous" et date RDV) sont affichés sur le calendrier.</li>
+            <li>Les relances planifiées (<em>nextFollowUp</em>) sont également visibles.</li>
+            <li>Cliquez sur un événement pour accéder directement à la fiche prospect.</li>
+            <li>Navigation mois par mois.</li>
+          </ul>
+        </div>
+
+        <!-- 10. Sourcing candidats -->
+        <div class="card help-section" id="sourcing">
+          <h3>10) Sourcing candidats</h3>
+          <p>Votre <strong>base candidats</strong> et outil de productivité pour le matching :</p>
+          <ul>
+            <li><strong>Pipeline candidats</strong> : liste complète avec filtres par statut (À sourcer, Contacté, Qualifié, En mission, Archivé), recherche, et tri.</li>
+            <li><strong>Ajout rapide</strong> : créez un candidat avec nom, rôle, compétences, localisation, LinkedIn, source.</li>
+            <li><strong>Import LinkedIn CSV</strong> : importez directement un export de contacts LinkedIn — le système mappe automatiquement les colonnes (prénom, nom, poste, URL…).</li>
+            <li><strong>Export CSV</strong> : exportez votre base candidats.</li>
+          </ul>
+          <p style="margin-top:10px"><strong>Outil Productivité / Matching :</strong></p>
+          <ul>
+            <li><strong>Sélection d'entreprises cibles</strong> : choisissez une ou plusieurs entreprises pour lesquelles vous cherchez des candidats.</li>
+            <li><strong>Mots-clés automatiques</strong> : le système extrait automatiquement les tags techniques de l'entreprise pour générer des mots-clés de recherche. Vous pouvez ajouter/retirer des mots-clés manuellement.</li>
+            <li><strong>Requête LinkedIn</strong> : une requête booléenne LinkedIn est générée automatiquement, prête à copier-coller dans LinkedIn Recruiter / Sales Navigator.</li>
+            <li><strong>Matching candidats</strong> : score de correspondance entre chaque candidat et les mots-clés sélectionnés.</li>
+            <li><strong>Candidat du jour ⭐</strong> : le meilleur match selon les filtres actuels est mis en avant, avec ouverture directe de son profil LinkedIn.</li>
+            <li><strong>Message d'approche</strong> : génération d'un message d'approche personnalisé, prêt à coller.</li>
+            <li><strong>Sauvegarde tags</strong> : enregistrez les mots-clés productivité directement dans les tags de l'entreprise pour enrichir les futures recherches.</li>
+          </ul>
+        </div>
+
+        <!-- 11. Fiche candidat -->
+        <div class="card help-section" id="fiche-candidat">
+          <h3>11) Fiche candidat détaillée</h3>
+          <p>Chaque candidat a sa fiche complète accessible depuis la page sourcing :</p>
+          <ul>
+            <li><strong>Informations</strong> : nom, rôle/poste, localisation, séniorité, technologie principale, LinkedIn, téléphone, email, source, TJM, disponibilité.</li>
+            <li><strong>Compétences (skills)</strong> : tags techniques avec saisie intelligente et autocomplete depuis le référentiel métiers.</li>
+            <li><strong>Statuts</strong> : À sourcer → Contacté → Qualifié → En mission → Archivé (avec archivage/désarchivage).</li>
+            <li><strong>Entreprises liées</strong> : associez un candidat à une ou plusieurs entreprises cibles avec recherche et sélection multiple.</li>
+            <li><strong>Notes</strong> : zone de texte libre pour le suivi.</li>
+            <li><strong>Auto-save</strong> : les modifications sont sauvegardées automatiquement après quelques secondes d'inactivité.</li>
+            <li><strong>Scrapping IA</strong> : même workflow en 2 clics (copie prompt → colle résultat IA) pour enrichir automatiquement le profil du candidat.</li>
+          </ul>
+        </div>
+
+        <!-- 12. Push & envoi d'emails -->
+        <div class="card help-section" id="push">
+          <h3>12) Push & envoi d'emails</h3>
+          <p>Le <strong>push</strong> désigne l'envoi d'un email/CV à un prospect. Le workflow est optimisé :</p>
+          <ol>
+            <li>Depuis la fiche prospect, cliquez sur <strong>📧 Email</strong>.</li>
+            <li>L'adresse email est <strong>copiée automatiquement</strong> dans le presse-papier.</li>
+            <li>Si une <strong>catégorie push</strong> est associée au prospect, le template Outlook (.msg) correspondant est ouvert automatiquement. Vous n'avez qu'à coller l'email dans le champ "À:".</li>
+            <li>Le push est <strong>loggé automatiquement</strong> dans l'historique avec la date, le canal et le template utilisé.</li>
+          </ol>
+          <p style="margin-top:10px"><strong>Page Push (historique) :</strong></p>
+          <ul>
+            <li>Historique complet de tous les push envoyés, filtrables par recherche et canal.</li>
+            <li><strong>Annuler le dernier push</strong> : en cas d'erreur, annulez le dernier envoi.</li>
+            <li><strong>Export Excel</strong> : exportez l'historique des push au format .xlsx.</li>
+            <li>Suppression unitaire si besoin.</li>
+          </ul>
+        </div>
+
+        <!-- 13. Catégories Push -->
+        <div class="card help-section" id="categories-push">
+          <h3>13) Catégories Push</h3>
+          <p>Organisez vos <strong>templates d'emails push</strong> par compétence / métier :</p>
+          <ul>
+            <li><strong>Catégories</strong> : chaque catégorie correspond à un dossier dans <code>pushs/</code> (ex: "C_embarqué", "FPGA", "Electronique"). Le système scanne automatiquement les dossiers existants.</li>
+            <li><strong>Fichiers .msg</strong> : chaque catégorie contient des fichiers templates Outlook (.msg, .eml, .oft). Le premier fichier est utilisé comme template par défaut lors de l'envoi.</li>
+            <li><strong>Mots-clés</strong> : associez des mots-clés à chaque catégorie pour le matching automatique.</li>
+            <li><strong>Matching candidats</strong> : chaque catégorie affiche les <strong>Top 3 candidats</strong> dont les compétences correspondent le mieux aux mots-clés de la catégorie (score de correspondance).</li>
+            <li><strong>Scan dossiers</strong> : le bouton "Scanner" détecte automatiquement les nouveaux dossiers dans <code>pushs/</code> et crée les catégories correspondantes.</li>
+            <li><strong>Éditeur de templates</strong> : créez/modifiez des templates email avec éditeur rich text (gras, italique, liens, variables).</li>
+          </ul>
+        </div>
+
+        <!-- 14. Recherche globale -->
+        <div class="card help-section" id="recherche">
+          <h3>14) Recherche globale</h3>
+          <p>Ouvrez la recherche rapide avec <strong><kbd>Ctrl+K</kbd></strong> (ou cliquez sur le badge 🔍 dans la sidebar) :</p>
+          <ul>
+            <li>Recherche instantanée dans : <strong>prospects</strong>, <strong>entreprises</strong>, <strong>candidats</strong>, <strong>push logs</strong>.</li>
+            <li>Résultats avec mise en surbrillance du terme recherché.</li>
+            <li>Navigation au clavier (↑↓ + Entrée) pour ouvrir directement la fiche.</li>
+            <li>Accès direct : chaque résultat renvoie vers la bonne page (fiche prospect, fiche entreprise, fiche candidat, page push).</li>
+          </ul>
+        </div>
+
+        <!-- 15. Stats -->
+        <div class="card help-section" id="stats">
+          <h3>15) Statistiques</h3>
+          <p>Analyse visuelle de votre activité de prospection :</p>
+          <ul>
+            <li><strong>KPIs</strong> : push envoyés, notes d'appel, relances en retard, taux de conversion, sur période configurable (semaine, mois, trimestre…).</li>
+            <li><strong>Graphique statuts</strong> : répartition de vos prospects par statut (doughnut chart).</li>
+            <li><strong>Graphique pertinence</strong> : répartition par niveau de pertinence.</li>
+            <li><strong>Activité push</strong> : courbe d'évolution des push envoyés par semaine/mois.</li>
+            <li><strong>Top entreprises</strong> : classement des entreprises les plus actives (basé sur nombre de push, RDV, et interactions).</li>
+            <li><strong>Filtrage temporel</strong> : choisissez la plage (semaine, mois, trimestre, année) et naviguez entre les périodes.</li>
+          </ul>
+        </div>
+
+        <!-- 16. Rapport hebdomadaire -->
+        <div class="card help-section" id="rapport">
+          <h3>16) Rapport hebdomadaire</h3>
+          <p>Générez un <strong>rapport de synthèse</strong> pour chaque semaine :</p>
+          <ul>
+            <li><strong>KPIs hebdo</strong> : push envoyés, notes d'appel, nouveaux prospects, RDV, relances traitées.</li>
+            <li><strong>Détail par entreprise</strong> : activité détaillée par client avec tags, push, et interactions de la semaine.</li>
+            <li><strong>Barre de statuts</strong> : répartition visuelle de votre pipeline.</li>
+            <li><strong>Export Markdown</strong> : générez le rapport au format Markdown, prêt à copier-coller dans OneNote, Slack, Teams, ou un email.</li>
+            <li><strong>Impression</strong> : mode impression optimisé (CSS print).</li>
+            <li><strong>Navigation semaine</strong> : sélecteur de semaine pour consulter les rapports passés.</li>
+          </ul>
+        </div>
+
+        <!-- 17. KPI Export -->
+        <div class="card help-section" id="kpi">
+          <h3>17) KPI & export Excel de validation</h3>
+          <p>Outil de <strong>checklist rapide</strong> pour générer un fichier Excel de validation :</p>
+          <ul>
+            <li>Sélectionnez une <strong>date</strong> et un <strong>titre</strong> (ex: "Semaine 06").</li>
+            <li>Cliquez sur <strong>"Générer Excel"</strong> pour obtenir un .xlsx formaté avec vos KPIs du jour, prêt à envoyer à votre manager ou à archiver.</li>
+          </ul>
+        </div>
+
+        <!-- 18. Référentiel métiers -->
+        <div class="card help-section" id="metiers">
+          <h3>18) Référentiel métiers</h3>
+          <p>Le référentiel contient <strong>251 tags techniques</strong> organisés en <strong>15 catégories</strong> métier (Électronique, Logiciel embarqué, Informatique industrielle, Mécanique, Systèmes, Automatisme, Robotique, etc.) :</p>
+          <ul>
+            <li><strong>Arbre interactif</strong> : parcourez les catégories et sous-catégories sous forme d'arborescence dépliable.</li>
+            <li><strong>Recherche</strong> : filtrez rapidement pour trouver un tag ou un métier.</li>
+            <li><strong>Statistiques</strong> : nombre de tags par catégorie, couverture dans votre base.</li>
+            <li><strong>Tags personnalisés</strong> : ajoutez vos propres tags métier en complément du référentiel standard.</li>
+            <li><strong>Utilisation</strong> : ces tags sont utilisés partout dans l'app — tags prospects, tags entreprises, compétences candidats, mots-clés de catégories push, et prompts de scrapping IA.</li>
+          </ul>
+        </div>
+
+        <!-- 19. Doublons -->
+        <div class="card help-section" id="doublons">
+          <h3>19) Doublons</h3>
+          <ul>
+            <li><strong>Détection</strong> : le système identifie les doublons potentiels par nom, email, ou téléphone.</li>
+            <li><strong>Fusion</strong> : pour chaque paire, choisissez la fiche à garder et celle à fusionner. Les données sont consolidées (tags, notes, callNotes, push logs) dans la fiche conservée.</li>
+            <li><strong>Prévisualisation</strong> : comparez les deux fiches côte à côte avant de fusionner.</li>
+          </ul>
+        </div>
+
+        <!-- 20. Snapshots -->
+        <div class="card help-section" id="snapshots">
+          <h3>20) Snapshots & restauration</h3>
+          <ul>
+            <li><strong>Snapshot manuel</strong> : créez une sauvegarde instantanée à tout moment.</li>
+            <li><strong>Snapshots automatiques</strong> : un snapshot est créé automatiquement au premier lancement de chaque jour.</li>
+            <li><strong>Restauration</strong> : restaurez n'importe quelle version. Une sauvegarde "before_restore" est créée automatiquement avant chaque restauration pour sécuriser l'opération.</li>
+            <li><strong>Historique</strong> : consultez la liste complète des snapshots avec date et label.</li>
+          </ul>
+          <div class="muted">Conseil : faites un snapshot avant une grosse importation ou un nettoyage de données.</div>
+        </div>
+
+        <!-- 21. Paramètres -->
+        <div class="card help-section" id="parametres">
+          <h3>21) Paramètres & exports</h3>
+          <p>La page Paramètres regroupe tous les outils de gestion de données :</p>
+          <ul>
+            <li><strong>Export JSON</strong> : sauvegardez l'intégralité de votre base au format JSON (compatible ré-import).</li>
+            <li><strong>Import JSON</strong> : restaurez une base depuis un export JSON précédent.</li>
+            <li><strong>Export Excel</strong> : export complet au format .xlsx avec toutes les colonnes.</li>
+            <li><strong>Import tags CSV</strong> : importez des tags depuis un fichier CSV pour enrichir vos prospects/entreprises en masse.</li>
+            <li><strong>Export vCard (.vcf)</strong> : exportez tous les prospects ayant un numéro de téléphone au format vCard, compatible iPhone/iCloud et tout gestionnaire de contacts.</li>
+            <li><strong>Réinitialiser</strong> : remise à zéro de la base (avec confirmation).</li>
+            <li><strong>Accès rapide</strong> : liens vers Snapshots, Métiers, Doublons, Aide.</li>
+          </ul>
+        </div>
+
+        <!-- 22. Mises à jour -->
+        <div class="card help-section" id="mises-a-jour">
+          <h3>22) Système de mises à jour</h3>
+          <p>Mettez à jour l'application directement depuis la page Paramètres :</p>
+          <ul>
+            <li><strong>Glisser-déposer</strong> : déposez vos fichiers de mise à jour (.py, .html, .js, .css…) dans la zone prévue. Le système <strong>détecte automatiquement</strong> l'emplacement de chaque fichier dans le projet.</li>
+            <li><strong>Zone de staging</strong> : vérifiez les fichiers détectés et leur destination avant d'appliquer.</li>
+            <li><strong>Backup automatique</strong> : une sauvegarde complète du projet est créée automatiquement avant chaque mise à jour.</li>
+            <li><strong>Application</strong> : un clic sur "Appliquer" remplace les fichiers. Relancez ensuite l'application pour que les changements prennent effet.</li>
+            <li><strong>Rollback</strong> : si une mise à jour pose problème, restaurez une version précédente en un clic depuis la liste des sauvegardes.</li>
+          </ul>
+        </div>
+
+        <!-- 23. Raccourcis & interface -->
+        <div class="card help-section" id="raccourcis">
+          <h3>23) Raccourcis & interface</h3>
+          <ul>
+            <li><strong><kbd>Ctrl+K</kbd></strong> : recherche globale rapide.</li>
+            <li><strong>Thème clair/sombre</strong> : basculez via le bouton 🌙 dans la sidebar. Le choix est mémorisé.</li>
+            <li><strong>Sidebar rétractable</strong> : cliquez sur le chevron pour réduire la sidebar et gagner de l'espace.</li>
+            <li><strong>Mobile responsive</strong> : menu hamburger sur mobile, interface adaptée aux petits écrans.</li>
+            <li><strong>Notifications toast</strong> : les actions (sauvegarde, export, erreur…) sont confirmées par des notifications visuelles en bas à droite.</li>
+            <li><strong>Tag autocomplete</strong> : lors de la saisie de tags, des suggestions issues du référentiel métiers apparaissent automatiquement.</li>
+            <li><strong>Bouton recherche flottant</strong> : sur mobile, un bouton flottant 🔍 permet d'ouvrir la recherche globale.</li>
+          </ul>
+        </div>
+
+        <!-- 24. Bonnes pratiques -->
+        <div class="card help-section" id="bonnes-pratiques">
+          <h3>24) Bonnes pratiques</h3>
+          <ul>
+            <li>Renseignez <strong>nextFollowUp</strong> à chaque interaction → votre page Focus devient votre to-do quotidien.</li>
+            <li>Centralisez la <strong>stack technique dans les tags entreprise</strong> pour booster le matching sourcing et la génération de requêtes LinkedIn.</li>
+            <li>Utilisez le <strong>Scrapping IA</strong> systématiquement sur les nouvelles fiches pour les enrichir rapidement.</li>
+            <li>Associez une <strong>catégorie push</strong> à chaque prospect pour automatiser l'ouverture du bon template Outlook.</li>
+            <li>Faites un <strong>Snapshot</strong> avant toute importation ou nettoyage massif.</li>
+            <li>Utilisez les <strong>vues sauvegardées</strong> pour vos scénarios de filtrage récurrents.</li>
+            <li>Consultez le <strong>Dashboard</strong> chaque matin pour prioriser votre journée.</li>
+            <li>Utilisez la <strong>Recherche <kbd>Ctrl+K</kbd></strong> plutôt que naviguer dans les listes.</li>
+            <li>Exportez un <strong>Rapport hebdo</strong> en fin de semaine pour votre suivi d'activité.</li>
+            <li>Tenez à jour les <strong>Opportunités</strong> sur les fiches entreprise pour suivre votre pipeline commercial.</li>
+          </ul>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script defer src="/static/js/sidebar.js?v=2000"></script>
+  <script defer src="/static/js/v8-features.js?v=2001"></script>
+  <script>
+    // Highlight active nav button
+    document.querySelectorAll('.nav-button').forEach(btn => {
+      btn.classList.remove('active');
+      if (btn.getAttribute('href') === window.location.pathname) btn.classList.add('active');
+    });
+  </script>
+
+</body>
+</html>
