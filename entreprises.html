@@ -60,11 +60,11 @@
             </main>
         </div>
     </div>
-    <div class="modal" id="modalCompany">
+    <div class="modal" role="dialog" aria-modal="true" id="modalCompany">
         <div class="modal-content">
             <div class="modal-header">
                 <span id="companyModalTitle">Ajouter Entreprise</span>
-                <button class="modal-close" onclick="closeCompanyModal()">&times;</button>
+                <button class="modal-close" aria-label="Fermer" onclick="this.closest('.modal').classList.remove('active')">&times;</button>
             </div>
             <form id="companyForm" onsubmit="saveCompany(event)">
                 <input type="hidden" id="inputCompanyId">
@@ -96,11 +96,11 @@
             </form>
         </div>
     </div>
-    <div class="modal" id="modalCompanySheet">
+    <div class="modal" role="dialog" aria-modal="true" id="modalCompanySheet">
         <div class="modal-content company-sheet-modal-content">
             <div class="modal-header">
                 <span id="companySheetTitle">Fiche entreprise</span>
-                <button class="modal-close" onclick="closeCompanySheet()">&times;</button>
+                <button class="modal-close" aria-label="Fermer" onclick="this.closest('.modal').classList.remove('active')">&times;</button>
             </div>
             <div class="company-sheet-subtitle" id="companySheetSubtitle"></div>
             <form id="companySheetForm" onsubmit="saveCompanySheet(event)">

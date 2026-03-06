@@ -154,9 +154,9 @@
                             <select id="savedViewSelect" title="Vues enregistrées"><option value="">Vues…</option></select>
                             <button class="btn btn-secondary" id="btnSaveView" type="button" title="Enregistrer la vue courante">💾 Vue</button>
                             <button class="btn btn-secondary" id="btnDeleteView" type="button" title="Supprimer la vue sélectionnée">🗑️ Suppr.</button>
-                            <button class="btn btn-secondary" onclick="openStatsModal()">📊 Stats</button>
+                            <button class="btn btn-secondary" onclick="openStatsModal()" aria-label="Statistiques">📊 Stats</button>
                             <div class="export-dropdown" id="exportDropdown">
-                            <button class="btn btn-secondary" type="button" onclick="this.parentElement.classList.toggle('open')">⬇️ Export</button>
+                            <button class="btn btn-secondary" type="button" onclick="this.parentElement.classList.toggle('open')" aria-label="Exporter les données">⬇️ Export</button>
                             <div class="export-dropdown-menu">
                                 <button class="export-dropdown-item" onclick="window.location.href='/api/export/xlsx'">📊 Export Excel</button>
                                 <button class="export-dropdown-item" onclick="exportCurrentViewCSV()">📄 Export CSV</button>
@@ -258,16 +258,16 @@
                             <thead>
                                 <tr>
                                     <th style="width:36px;" scope="col"><input type="checkbox" id="selectAll" title="Sélectionner tous les prospects" aria-label="Sélectionner tous les prospects" onclick="toggleSelectAll(this.checked)"></th>
-                                    <th class="sortable" data-sort="name">Nom <span class="sort-indicator" id="sort-name"></span></th>
-                                    <th class="sortable" data-sort="company">Entreprise <span class="sort-indicator" id="sort-company"></span></th>
-                                    <th>Fonction</th>
-                                    <th class="sortable" data-sort="pertinence">Pertinence <span class="sort-indicator" id="sort-pertinence"></span></th>
-                                    <th class="sortable" data-sort="score">Score <span class="sort-indicator" id="sort-score"></span></th>
-                                    <th class="sortable" data-sort="statut">Statut <span class="sort-indicator" id="sort-statut"></span></th>
-                                    <th class="sortable" data-sort="lastContact">Dernier Contact <span class="sort-indicator" id="sort-lastContact"></span></th>
-                                    <th>Email</th>
-                                    <th>Push</th>
-                                    <th class="sortable" data-sort="nextFollowUp">Relance <span class="sort-indicator" id="sort-nextFollowUp"></span></th>
+                                    <th scope="col" class="sortable" data-sort="name">Nom <span class="sort-indicator" id="sort-name"></span></th>
+                                    <th scope="col" class="sortable" data-sort="company">Entreprise <span class="sort-indicator" id="sort-company"></span></th>
+                                    <th scope="col">Fonction</th>
+                                    <th scope="col" class="sortable" data-sort="pertinence">Pertinence <span class="sort-indicator" id="sort-pertinence"></span></th>
+                                    <th scope="col" class="sortable" data-sort="score">Score <span class="sort-indicator" id="sort-score"></span></th>
+                                    <th scope="col" class="sortable" data-sort="statut">Statut <span class="sort-indicator" id="sort-statut"></span></th>
+                                    <th scope="col" class="sortable" data-sort="lastContact">Dernier Contact <span class="sort-indicator" id="sort-lastContact"></span></th>
+                                    <th scope="col">Email</th>
+                                    <th scope="col">Push</th>
+                                    <th scope="col" class="sortable" data-sort="nextFollowUp">Relance <span class="sort-indicator" id="sort-nextFollowUp"></span></th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
@@ -282,11 +282,11 @@
             </main>
         </div>
     </div>
-    <div class="modal" id="modalProspect">
+    <div class="modal" role="dialog" aria-modal="true" id="modalProspect">
         <div class="modal-content">
             <div class="modal-header">
                 <span id="modalTitle">Ajouter Prospect</span>
-                <button class="modal-close" onclick="closeModal()">&times;</button>
+                <button class="modal-close" onclick="closeModal()" aria-label="Fermer">&times;</button>
             </div>
             <form id="prospectForm" onsubmit="saveProspect(event)">
                 <div class="form-group">
@@ -345,7 +345,7 @@
             </form>
         </div>
     </div>
-<div class="modal" id="modalDetail">
+<div class="modal" role="dialog" aria-modal="true" id="modalDetail">
         <div class="modal-content">
             <div class="modal-header">
                 <span>Détail du Prospect</span>
@@ -354,7 +354,7 @@
             <div id="detailContent"></div>
         </div>
     </div>
-<div class="modal" id="modalStats">
+<div class="modal" role="dialog" aria-modal="true" id="modalStats">
         <div class="modal-content">
             <div class="modal-header">
                 <span>📊 Statistiques</span>
@@ -363,7 +363,7 @@
             <div id="statsContent"></div>
         </div>
     </div>
-<div class="modal" id="modalCompany">
+<div class="modal" role="dialog" aria-modal="true" id="modalCompany">
         <div class="modal-content">
             <div class="modal-header">
                 <span id="companyModalTitle">Ajouter Entreprise</span>
@@ -403,7 +403,7 @@
             </form>
         </div>
     </div>
-<div class="modal" id="modalCallChoice">
+<div class="modal" role="dialog" aria-modal="true" id="modalCallChoice">
         <div class="modal-content" style="max-width: 420px;">
             <div class="modal-header">
                 <span>Choisir un numéro</span>
@@ -419,7 +419,7 @@
         </div>
     </div>
     <!-- Modal Quick Add IA -->
-    <div class="modal" id="modalQuickAdd">
+    <div class="modal" role="dialog" aria-modal="true" id="modalQuickAdd">
         <div class="modal-content" style="max-width:560px;">
             <div class="modal-header">
                 <span>➕ Ajouter via IA</span>
