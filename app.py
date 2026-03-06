@@ -290,6 +290,13 @@ def favicon():
     # Serve app icon (tab favicon)
     return send_from_directory(str(APP_DIR / "static"), "favicon.ico", mimetype="image/vnd.microsoft.icon")
 
+@app.errorhandler(404)
+def page_not_found(e):
+    """Custom 404 page (v23.4)."""
+    if request.path.startswith('/api/'):
+        return jsonify(ok=False, error="Endpoint introuvable"), 404
+    return send_from_directory(APP_DIR, "404.html"), 404
+
 # ═══════════════════════════════════════════════════════════════════
 # Auth routes
 # ═══════════════════════════════════════════════════════════════════
