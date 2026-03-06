@@ -24,7 +24,7 @@ import secrets
 from services.dashboard_goals import build_goals_payload as _build_goals_payload, get_goals_config as _get_goals_config
 
 APP_DIR = Path(__file__).resolve().parent
-APP_VERSION = "23.2"
+APP_VERSION = "23.3"
 import os
 import hashlib
 
@@ -784,6 +784,12 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
+
+-- v23.3: indexes for multi-tenant performance (owner_id filtering)
+CREATE INDEX IF NOT EXISTS idx_prospects_owner ON prospects(owner_id);
+CREATE INDEX IF NOT EXISTS idx_prospects_owner_statut ON prospects(owner_id, statut);
+CREATE INDEX IF NOT EXISTS idx_companies_owner ON companies(owner_id);
+CREATE INDEX IF NOT EXISTS idx_candidates_owner ON candidates(owner_id);
 '''
         )
 
@@ -1733,7 +1739,7 @@ def upsert_all(data: Dict[str, Any]) -> None:
                             # Teams webhook: RDV pris (v22.1)
                             try:
                                 _p_name = (p.get("name") or "").strip()
-                                _c_row = cur.execute("SELECT groupe FROM companies WHERE id=?;", (p.get("company_id"),)).fetchone()
+                                _c_row = cur.execute("SELECT groupe FROM companies WHERE id=? AND owner_id=?;", (p.get("company_id"), uid)).fetchone()
                                 _c_name = _c_row[0] if _c_row else ""
                                 _prefix = _get_user_prefix(uid)
                                 _card = _build_adaptive_card(
@@ -5383,9 +5389,9 @@ def api_prospect_mark_done():
             )
         # Teams webhook: CR (v22.1)
         try:
-            p_row = conn.execute("SELECT name, company_id FROM prospects WHERE id=?;", (int(pid),)).fetchone()
+            p_row = conn.execute("SELECT name, company_id FROM prospects WHERE id=? AND owner_id=?;", (int(pid), uid)).fetchone()
             p_name = p_row["name"] if p_row else "?"
-            c_row = conn.execute("SELECT groupe FROM companies WHERE id=?;", (p_row["company_id"],)).fetchone() if p_row else None
+            c_row = conn.execute("SELECT groupe FROM companies WHERE id=? AND owner_id=?;", (p_row["company_id"], uid)).fetchone() if p_row else None
             c_name = c_row["groupe"] if c_row else ""
             prefix = _get_user_prefix(uid)
             card = _build_adaptive_card(

@@ -7402,3 +7402,87 @@ a.tel-link:hover { text-decoration: underline; }
   padding-top: 2px;
 }
 
+/* ═══ Pagination ═══ */
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  margin-top: 8px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.06);
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.pagination-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.85rem;
+  color: rgba(255,255,255,0.6);
+}
+.pagination-size-select {
+  background: rgba(255,255,255,0.08);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  outline: none;
+}
+.pagination-size-select:focus {
+  border-color: var(--color-primary);
+}
+.pagination-pages {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.pagination-btn {
+  min-width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.05);
+  color: rgba(255,255,255,0.8);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  padding: 0 6px;
+}
+.pagination-btn:hover:not(:disabled):not(.pagination-active) {
+  background: rgba(255,255,255,0.12);
+  border-color: rgba(255,255,255,0.2);
+}
+.pagination-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.pagination-btn.pagination-active {
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
+  font-weight: 600;
+}
+.pagination-ellipsis {
+  padding: 0 4px;
+  color: rgba(255,255,255,0.4);
+}
+@media (max-width: 600px) {
+  .pagination-bar { padding: 10px 12px; }
+  .pagination-btn { min-width: 28px; height: 28px; font-size: 0.78rem; }
+}
+@media (prefers-color-scheme: light) {
+  .pagination-bar { background: rgba(0,0,0,0.03); border-color: rgba(0,0,0,0.08); }
+  .pagination-info { color: rgba(0,0,0,0.55); }
+  .pagination-size-select { background: #fff; color: #333; border-color: rgba(0,0,0,0.15); }
+  .pagination-btn { background: #fff; color: #333; border-color: rgba(0,0,0,0.12); }
+  .pagination-btn:hover:not(:disabled):not(.pagination-active) { background: rgba(0,0,0,0.06); }
+  .pagination-ellipsis { color: rgba(0,0,0,0.35); }
+}
+
