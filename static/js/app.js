@@ -268,6 +268,9 @@ let currentView = 'all';
 let filteredProspects = [];
 let editingId = null;
 let selectedProspects = new Set();
+// Pagination state
+let _pageSize = parseInt(localStorage.getItem('prospup_pageSize') || '50', 10);
+let _currentPage = 1;
 // Multi-status exclusion filter (UI: 🚫 Exclure)
 let excludedStatuses = new Set();
 let sortKey = 'lastContact';
@@ -1270,6 +1273,7 @@ function filterProspects() {
     });
 
     applySort();
+    _currentPage = 1; // Reset pagination when filters change
     if (prospScrollSnapshot) {
         _queueProspectsScrollRestore(prospScrollSnapshot);
     }
@@ -1601,6 +1605,92 @@ function renderPushMini(p) {
     return parts.join('');
 }
 
+function _totalPages() {
+    if (_pageSize <= 0 || filteredProspects.length === 0) return 1;
+    return Math.ceil(filteredProspects.length / _pageSize);
+}
+
+function _clampPage() {
+    const tp = _totalPages();
+    if (_currentPage < 1) _currentPage = 1;
+    if (_currentPage > tp) _currentPage = tp;
+}
+
+function goToPage(p) {
+    _currentPage = p;
+    _clampPage();
+    renderProspects();
+    // Scroll to top of table
+    var tbl = document.getElementById('tableBody');
+    if (tbl) tbl.closest('.table-container')?.scrollTo({top: 0, behavior: 'smooth'});
+}
+
+function changePageSize(val) {
+    var n = parseInt(val, 10);
+    if (n > 0) {
+        _pageSize = n;
+        localStorage.setItem('prospup_pageSize', String(n));
+        _currentPage = 1;
+        renderProspects();
+    }
+}
+
+function _renderPagination() {
+    var container = document.getElementById('paginationControls');
+    if (!container) return;
+    var total = filteredProspects.length;
+    if (total <= 25) {
+        container.innerHTML = '';
+        container.style.display = 'none';
+        return;
+    }
+    container.style.display = '';
+    var tp = _totalPages();
+    _clampPage();
+    var start = (_currentPage - 1) * _pageSize + 1;
+    var end = Math.min(_currentPage * _pageSize, total);
+
+    var html = '<div class="pagination-bar">';
+    html += '<div class="pagination-info">';
+    html += '<span>' + start + '–' + end + ' sur ' + total + '</span>';
+    html += ' <select class="pagination-size-select" onchange="changePageSize(this.value)" title="Prospects par page">';
+    [25, 50, 100].forEach(function(s) {
+        html += '<option value="' + s + '"' + (s === _pageSize ? ' selected' : '') + '>' + s + ' / page</option>';
+    });
+    html += '</select>';
+    html += '</div>';
+
+    html += '<div class="pagination-pages">';
+    // Previous button
+    html += '<button class="pagination-btn" ' + (_currentPage <= 1 ? 'disabled' : '') + ' onclick="goToPage(' + (_currentPage - 1) + ')" title="Page précédente">&lsaquo;</button>';
+
+    // Page numbers with smart ellipsis
+    var pages = [];
+    if (tp <= 7) {
+        for (var i = 1; i <= tp; i++) pages.push(i);
+    } else {
+        pages.push(1);
+        if (_currentPage > 3) pages.push('...');
+        var rangeStart = Math.max(2, _currentPage - 1);
+        var rangeEnd = Math.min(tp - 1, _currentPage + 1);
+        for (var i = rangeStart; i <= rangeEnd; i++) pages.push(i);
+        if (_currentPage < tp - 2) pages.push('...');
+        pages.push(tp);
+    }
+    pages.forEach(function(p) {
+        if (p === '...') {
+            html += '<span class="pagination-ellipsis">…</span>';
+        } else {
+            html += '<button class="pagination-btn' + (p === _currentPage ? ' pagination-active' : '') + '" onclick="goToPage(' + p + ')">' + p + '</button>';
+        }
+    });
+
+    // Next button
+    html += '<button class="pagination-btn" ' + (_currentPage >= tp ? 'disabled' : '') + ' onclick="goToPage(' + (_currentPage + 1) + ')" title="Page suivante">&rsaquo;</button>';
+    html += '</div></div>';
+    container.innerHTML = html;
+}
+
 function renderProspects() {
     const tbody = document.getElementById('tableBody');
     if (!tbody) return;
@@ -1609,11 +1699,18 @@ function renderProspects() {
     if (filteredProspects.length === 0) {
         tbody.innerHTML = '<tr><td colspan="12" style="text-align: center; padding: 40px;">Aucun prospect trouvé</td></tr>';
         updateStats([]);
+        _renderPagination();
         _flushProspectsScrollRestore();
         return;
     }
 
-    filteredProspects.forEach(prospect => {
+    // Pagination: slice to current page
+    _clampPage();
+    var startIdx = (_currentPage - 1) * _pageSize;
+    var endIdx = Math.min(startIdx + _pageSize, filteredProspects.length);
+    var pageProspects = filteredProspects.slice(startIdx, endIdx);
+
+    pageProspects.forEach(prospect => {
         const company = data.companies.find(c => c.id === prospect.company_id);
         const pert = parseInt(prospect.pertinence, 10) || 3;
         const stars = '★'.repeat(pert) + '☆'.repeat(5 - pert);
@@ -1681,7 +1778,9 @@ function renderProspects() {
         tbody.appendChild(row);
     });
 
+    // Stats use ALL filtered prospects (not just current page)
     updateStats(filteredProspects);
+    _renderPagination();
     if (typeof renderKanban === 'function') renderKanban();
     _flushProspectsScrollRestore();
 }
@@ -6575,10 +6674,14 @@ function showOnboardingIfNeeded() {
 }
 
 // ====== Bootstrap multi-pages ======
-const APP_BUILD = '2026.03.02-01';
+const APP_BUILD = '2026.03.06-01';
 
 function ensureBuildIndicator() {
     try {
+        // v23.4: Only show build badge in local/dev environments
+        const isProduction = /prospup\.work$/i.test(window.location.hostname);
+        if (isProduction) return;
+
         const indicatorId = 'appBuildIndicator';
         let badge = document.getElementById(indicatorId);
         if (!badge) {

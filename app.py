@@ -21,10 +21,12 @@ from flask import Flask, jsonify, request, send_from_directory, send_file, redir
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 import secrets
+import hmac
+import base64
 from services.dashboard_goals import build_goals_payload as _build_goals_payload, get_goals_config as _get_goals_config
 
 APP_DIR = Path(__file__).resolve().parent
-APP_VERSION = "23.2"
+APP_VERSION = "24.0"
 import os
 import hashlib
 
@@ -73,7 +75,8 @@ else:
 
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['PERMANENT_SESSION_LIFETIME'] = datetime.timedelta(days=30)
+app.config['SESSION_COOKIE_SECURE'] = True   # v23.4: requires HTTPS (Cloudflare Tunnel)
+app.config['PERMANENT_SESSION_LIFETIME'] = datetime.timedelta(hours=8)  # v23.4: reduced from 30d for security
 
 # v22: Compute content hashes for static assets (auto cache busters)
 _static_hashes: Dict[str, str] = {}
@@ -96,6 +99,31 @@ _CACHE_BUSTER_RE = re.compile(r'(/static/[^"\'?]+)\?v=\d+')
 
 @app.after_request
 def _after_request(response):
+    # ── Security headers (v23.4) ──
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=()'
+    # HSTS: only when served behind Cloudflare Tunnel (HTTPS)
+    if request.is_secure or request.headers.get('X-Forwarded-Proto') == 'https':
+        response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    # CSP: restrictive but allows inline styles/scripts (needed for current architecture)
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; "
+        "connect-src 'self'; "
+        "font-src 'self'; "
+        "frame-ancestors 'self'"
+    )
+
+    # ── CORS for mobile JWT auth (v24.0) ──
+    if request.headers.get("Authorization", "").startswith("Bearer ") or request.method == "OPTIONS":
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+
     # Cache headers for API GET responses (30s private cache)
     if request.path.startswith('/api/') and request.method == 'GET':
         response.headers.setdefault('Cache-Control', 'private, max-age=30')
@@ -234,10 +262,47 @@ def _require_same_origin():
 
 @app.before_request
 def _require_auth():
-    """Protect all routes except login, static, and favicon."""
+    """Protect all routes except login, static, and favicon.
+    Supports both session cookies (web) and JWT Bearer tokens (mobile v24.0).
+    CSRF is enforced for cookie auth; JWT Bearer is inherently CSRF-safe."""
+    # ── CORS preflight ──
+    if request.method == "OPTIONS":
+        return
+
     allowed = ('/login', '/static/', '/favicon.ico', '/api/auth/')
     if any(request.path.startswith(p) for p in allowed):
         return
+
+    # ── JWT auth (mobile v24.0) ──
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        result = _verify_access_token(token)
+        if result == "expired":
+            return jsonify(ok=False, error="token_expired"), 401
+        if result is None:
+            return jsonify(ok=False, error="invalid_token"), 401
+        # Populate session-like context so _uid() and g.user work transparently
+        g.jwt_user = result
+        g.user = {"id": result["user_id"], "role": result["user_role"],
+                   "display_name": result["user_name"], "username": result["user_name"]}
+        session["user_id"] = result["user_id"]
+        session["user_role"] = result["user_role"]
+        session["user_name"] = result["user_name"]
+        # Reader role check
+        if result["user_role"] == "reader" and request.method in ('POST', 'PUT', 'DELETE'):
+            write_ok = ('/api/auth/', '/api/saved-views')
+            if not any(request.path.startswith(p) for p in write_ok):
+                return jsonify(ok=False, error="Accès en lecture seule"), 403
+        return  # JWT auth OK — skip session & CSRF checks
+
+    # ── CSRF protection on mutations (cookie auth only, v23.4) ──
+    if request.method in ('POST', 'PUT', 'DELETE') and request.path.startswith('/api/'):
+        chk = _require_same_origin()
+        if chk:
+            return chk
+
+    # ── Session auth (web, unchanged) ──
     if not session.get('user_id'):
         if request.path.startswith('/api/'):
             return jsonify(ok=False, error="Non authentifié"), 401
@@ -253,6 +318,15 @@ def _require_auth():
         if not any(request.path.startswith(p) for p in write_ok):
             return jsonify(ok=False, error="Accès en lecture seule"), 403
 
+@app.route("/api/<path:path>", methods=["OPTIONS"])
+def api_cors_preflight(path):
+    """Handle CORS preflight requests for mobile app (v24.0)."""
+    resp = app.make_default_options_response()
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    return resp
+
 @app.context_processor
 def _inject_user():
     """Make current user available to all templates."""
@@ -262,6 +336,13 @@ def _inject_user():
 def favicon():
     # Serve app icon (tab favicon)
     return send_from_directory(str(APP_DIR / "static"), "favicon.ico", mimetype="image/vnd.microsoft.icon")
+
+@app.errorhandler(404)
+def page_not_found(e):
+    """Custom 404 page (v23.4)."""
+    if request.path.startswith('/api/'):
+        return jsonify(ok=False, error="Endpoint introuvable"), 404
+    return send_from_directory(APP_DIR, "404.html"), 404
 
 # ═══════════════════════════════════════════════════════════════════
 # Auth routes
@@ -273,8 +354,124 @@ def page_login():
         return redirect('/dashboard')
     return send_from_directory(APP_DIR, "login.html")
 
+# v23.4: Simple in-memory rate limiter for login (IP-based)
+_login_attempts: Dict[str, List[float]] = {}
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_WINDOW_SECONDS = 300  # 5 minutes
+
+def _check_login_rate_limit() -> bool:
+    """Returns True if rate limited."""
+    ip = request.remote_addr or "unknown"
+    now = time.time()
+    attempts = _login_attempts.get(ip, [])
+    # Clean old attempts
+    attempts = [t for t in attempts if now - t < _LOGIN_WINDOW_SECONDS]
+    _login_attempts[ip] = attempts
+    return len(attempts) >= _LOGIN_MAX_ATTEMPTS
+
+def _record_login_attempt():
+    ip = request.remote_addr or "unknown"
+    _login_attempts.setdefault(ip, []).append(time.time())
+
+# ── JWT auth helpers (v24.0 — mobile app support) ──────────────────
+# Minimal HS256 JWT implementation (no PyJWT dependency needed)
+_JWT_ACCESS_EXPIRY = 900        # 15 minutes
+_JWT_REFRESH_EXPIRY = 2592000   # 30 days
+
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(s: str) -> bytes:
+    s += "=" * (4 - len(s) % 4)
+    return base64.urlsafe_b64decode(s)
+
+
+def _jwt_encode(payload: dict, secret: str) -> str:
+    """Encode a JWT with HS256."""
+    header = _b64url_encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+    body = _b64url_encode(json.dumps(payload).encode())
+    msg = f"{header}.{body}"
+    sig = hmac.new(secret.encode(), msg.encode(), "sha256").digest()
+    return f"{msg}.{_b64url_encode(sig)}"
+
+
+def _jwt_decode(token: str, secret: str) -> dict | str | None:
+    """Decode and verify a JWT. Returns payload dict, 'expired', or None."""
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        msg = f"{parts[0]}.{parts[1]}"
+        sig = hmac.new(secret.encode(), msg.encode(), "sha256").digest()
+        expected_sig = _b64url_decode(parts[2])
+        if not hmac.compare_digest(sig, expected_sig):
+            return None
+        payload = json.loads(_b64url_decode(parts[1]))
+        if payload.get("exp") and payload["exp"] < int(time.time()):
+            return "expired"
+        return payload
+    except Exception:
+        return None
+
+
+def _generate_access_token(user):
+    """Generate a short-lived JWT access token."""
+    payload = {
+        "user_id": user["id"],
+        "user_role": user["role"],
+        "user_name": user.get("display_name") or user.get("username") or "",
+        "type": "access",
+        "iat": int(time.time()),
+        "exp": int(time.time()) + _JWT_ACCESS_EXPIRY,
+    }
+    return _jwt_encode(payload, app.secret_key)
+
+
+def _generate_refresh_token(user, device=None):
+    """Generate a long-lived refresh token, store its hash in DB."""
+    raw = secrets.token_urlsafe(48)
+    token_hash = hashlib.sha256(raw.encode()).hexdigest()
+    expires_at = (datetime.datetime.now() + datetime.timedelta(seconds=_JWT_REFRESH_EXPIRY)).isoformat(timespec="seconds")
+    with _auth_conn() as conn:
+        conn.execute(
+            "INSERT INTO refresh_tokens (user_id, token_hash, expires_at, device, createdAt) VALUES (?, ?, ?, ?, ?);",
+            (user["id"], token_hash, expires_at, device, datetime.datetime.now().isoformat(timespec="seconds"))
+        )
+    return raw
+
+
+def _verify_access_token(token):
+    """Decode and verify an access token. Returns payload dict, 'expired', or None."""
+    result = _jwt_decode(token, app.secret_key)
+    if isinstance(result, dict) and result.get("type") != "access":
+        return None
+    return result
+
+
+def _verify_refresh_token(raw_token):
+    """Verify a refresh token. Returns user_id or None."""
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+    with _auth_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM refresh_tokens WHERE token_hash=? AND revoked=0;",
+            (token_hash,)
+        ).fetchone()
+    if not row:
+        return None
+    if row["expires_at"] < now_iso:
+        return None
+    return row["user_id"]
+
+
 @app.post("/api/auth/login")
 def api_auth_login():
+    # Rate limiting (v23.4)
+    if _check_login_rate_limit():
+        return jsonify(ok=False, error="Trop de tentatives. Réessayez dans quelques minutes."), 429
+
     payload = request.get_json(force=True, silent=True) or {}
     username = (payload.get("username") or "").strip().lower()
     password = payload.get("password") or ""
@@ -282,7 +479,15 @@ def api_auth_login():
         return jsonify(ok=False, error="Identifiants requis"), 400
     with _auth_conn() as conn:
         user = conn.execute("SELECT * FROM users WHERE LOWER(username)=? AND is_active=1;", (username,)).fetchone()
-        if not user or not check_password_hash(user["password_hash"], password):
+        # v23.4: constant-time check to prevent timing-based user enumeration
+        if user:
+            pw_ok = check_password_hash(user["password_hash"], password)
+        else:
+            # Dummy hash check to keep timing consistent
+            check_password_hash("pbkdf2:sha256:600000$dummy$0" * 2, password)
+            pw_ok = False
+        if not pw_ok:
+            _record_login_attempt()
             return jsonify(ok=False, error="Identifiants incorrects"), 401
         session.permanent = True
         session['user_id'] = user['id']
@@ -339,6 +544,72 @@ def api_auth_logout():
     session.clear()
     return jsonify(ok=True)
 
+# ── JWT endpoints (v24.0 — mobile app) ─────────────────────────────
+
+@app.post("/api/auth/token")
+def api_auth_token():
+    """Mobile login: returns JWT access + refresh tokens."""
+    if _check_login_rate_limit():
+        return jsonify(ok=False, error="Trop de tentatives. Réessayez dans quelques minutes."), 429
+    payload = request.get_json(force=True, silent=True) or {}
+    username = (payload.get("username") or "").strip().lower()
+    password = payload.get("password") or ""
+    device = payload.get("device")
+    if not username or not password:
+        return jsonify(ok=False, error="Identifiants requis"), 400
+    with _auth_conn() as conn:
+        user = conn.execute("SELECT * FROM users WHERE LOWER(username)=? AND is_active=1;", (username,)).fetchone()
+        if user:
+            pw_ok = check_password_hash(user["password_hash"], password)
+        else:
+            check_password_hash("pbkdf2:sha256:600000$dummy$0" * 2, password)
+            pw_ok = False
+        if not pw_ok:
+            _record_login_attempt()
+            return jsonify(ok=False, error="Identifiants incorrects"), 401
+        user = dict(user)
+        conn.execute("UPDATE users SET lastLoginAt=? WHERE id=?;",
+                     (datetime.datetime.now().isoformat(timespec="seconds"), user["id"]))
+    access = _generate_access_token(user)
+    refresh = _generate_refresh_token(user, device)
+    return jsonify(ok=True, access_token=access, refresh_token=refresh,
+                   expires_in=_JWT_ACCESS_EXPIRY,
+                   user={"id": user["id"], "role": user["role"],
+                         "name": user.get("display_name") or user["username"]})
+
+
+@app.post("/api/auth/refresh")
+def api_auth_refresh():
+    """Renew access token using a valid refresh token."""
+    payload = request.get_json(force=True, silent=True) or {}
+    raw = payload.get("refresh_token")
+    if not raw:
+        return jsonify(ok=False, error="refresh_token requis"), 400
+    user_id = _verify_refresh_token(raw)
+    if not user_id:
+        return jsonify(ok=False, error="Token invalide ou expiré"), 401
+    with _auth_conn() as conn:
+        user = conn.execute("SELECT * FROM users WHERE id=? AND is_active=1;", (user_id,)).fetchone()
+    if not user:
+        return jsonify(ok=False, error="Utilisateur inactif"), 401
+    user = dict(user)
+    access = _generate_access_token(user)
+    return jsonify(ok=True, access_token=access, expires_in=_JWT_ACCESS_EXPIRY)
+
+
+@app.post("/api/auth/revoke")
+def api_auth_revoke():
+    """Revoke a refresh token (mobile logout)."""
+    payload = request.get_json(force=True, silent=True) or {}
+    raw = payload.get("refresh_token")
+    if not raw:
+        return jsonify(ok=False, error="refresh_token requis"), 400
+    token_hash = hashlib.sha256(raw.encode()).hexdigest()
+    with _auth_conn() as conn:
+        conn.execute("UPDATE refresh_tokens SET revoked=1 WHERE token_hash=?;", (token_hash,))
+    return jsonify(ok=True)
+
+
 @app.post("/api/auth/change-password")
 def api_auth_change_password():
     uid = session.get('user_id')
@@ -349,8 +620,12 @@ def api_auth_change_password():
     new_pw = payload.get("new_password", "")
     if not old_pw or not new_pw:
         return jsonify(ok=False, error="Champs requis"), 400
-    if len(new_pw) < 4:
-        return jsonify(ok=False, error="Mot de passe trop court (min 4)"), 400
+    if len(new_pw) < 8:
+        return jsonify(ok=False, error="Mot de passe trop court (min 8 caractères)"), 400
+    if not any(c.isdigit() for c in new_pw):
+        return jsonify(ok=False, error="Le mot de passe doit contenir au moins un chiffre"), 400
+    if not any(c.isalpha() for c in new_pw):
+        return jsonify(ok=False, error="Le mot de passe doit contenir au moins une lettre"), 400
     with _auth_conn() as conn:
         user = conn.execute("SELECT * FROM users WHERE id=?;", (uid,)).fetchone()
         if not user or not check_password_hash(user["password_hash"], old_pw):
@@ -408,8 +683,12 @@ def api_users_save():
                              (generate_password_hash(password), uid))
             return jsonify(ok=True, action="updated")
         else:
-            if not password or len(password) < 4:
-                return jsonify(ok=False, error="Mot de passe requis (min 4 caractères)"), 400
+            if not password or len(password) < 8:
+                return jsonify(ok=False, error="Mot de passe requis (min 8 caractères, avec au moins 1 chiffre et 1 lettre)"), 400
+            if not any(c.isdigit() for c in password):
+                return jsonify(ok=False, error="Le mot de passe doit contenir au moins un chiffre"), 400
+            if not any(c.isalpha() for c in password):
+                return jsonify(ok=False, error="Le mot de passe doit contenir au moins une lettre"), 400
             dup = conn.execute("SELECT id FROM users WHERE LOWER(username)=?;", (username,)).fetchone()
             if dup:
                 return jsonify(ok=False, error="Username déjà pris"), 409
@@ -784,6 +1063,28 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
+
+-- v23.5: search performance indexes (columns that exist in CREATE TABLE)
+CREATE INDEX IF NOT EXISTS idx_prospects_name ON prospects(name);
+CREATE INDEX IF NOT EXISTS idx_prospects_email ON prospects(email);
+CREATE INDEX IF NOT EXISTS idx_companies_groupe ON companies(groupe);
+CREATE INDEX IF NOT EXISTS idx_push_logs_sentAt ON push_logs(sentAt);
+
+-- v23.5: audit trail table
+CREATE TABLE IF NOT EXISTS audit_log (
+    id        INTEGER PRIMARY KEY,
+    user_id   INTEGER NOT NULL,
+    action    TEXT NOT NULL,
+    entity    TEXT NOT NULL,
+    entity_id INTEGER,
+    old_value TEXT,
+    new_value TEXT,
+    ip        TEXT,
+    createdAt TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON audit_log(entity, entity_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_date ON audit_log(createdAt);
 '''
         )
 
@@ -893,6 +1194,20 @@ CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
         if "owner_id" not in cand_cols:
             _add_col("candidates", "owner_id", "INTEGER")
 
+        # v23.5: Soft delete — add deleted_at column to main tables
+        for tbl in ("prospects", "companies", "candidates"):
+            tbl_cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({tbl});").fetchall()]
+            if "deleted_at" not in tbl_cols:
+                _add_col(tbl, "deleted_at", "TEXT")
+
+        # v23.3+: indexes on owner_id (created after migration adds the column)
+        conn.executescript('''
+            CREATE INDEX IF NOT EXISTS idx_prospects_owner ON prospects(owner_id);
+            CREATE INDEX IF NOT EXISTS idx_prospects_owner_statut ON prospects(owner_id, statut);
+            CREATE INDEX IF NOT EXISTS idx_companies_owner ON companies(owner_id);
+            CREATE INDEX IF NOT EXISTS idx_candidates_owner ON candidates(owner_id);
+        ''')
+
         # App settings (v11) — key/value config store
         conn.executescript('''
             CREATE TABLE IF NOT EXISTS app_settings (
@@ -912,6 +1227,20 @@ CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
                 is_active    INTEGER DEFAULT 1,
                 createdAt    TEXT,
                 lastLoginAt  TEXT
+            );
+        ''')
+
+        # Refresh tokens for mobile JWT auth (v24.0)
+        conn.executescript('''
+            CREATE TABLE IF NOT EXISTS refresh_tokens (
+                id         INTEGER PRIMARY KEY,
+                user_id    INTEGER NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                expires_at TEXT NOT NULL,
+                revoked    INTEGER DEFAULT 0,
+                device     TEXT,
+                createdAt  TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
             );
         ''')
 
@@ -1345,15 +1674,15 @@ def read_all(owner_id: int | None = None) -> Dict[str, Any]:
 
     with _conn() as conn:
         if owner_id is not None:
-            companies = [dict(r) for r in conn.execute("SELECT * FROM companies WHERE owner_id=? ORDER BY id;", (owner_id,)).fetchall()]
+            companies = [dict(r) for r in conn.execute("SELECT * FROM companies WHERE owner_id=? AND deleted_at IS NULL ORDER BY id;", (owner_id,)).fetchall()]
         else:
-            companies = [dict(r) for r in conn.execute("SELECT * FROM companies ORDER BY id;").fetchall()]
+            companies = [dict(r) for r in conn.execute("SELECT * FROM companies WHERE deleted_at IS NULL ORDER BY id;").fetchall()]
         if owner_id is not None:
             prospects_rows = conn.execute(
-                "SELECT * FROM prospects WHERE owner_id=? ORDER BY id;", (owner_id,)
+                "SELECT * FROM prospects WHERE owner_id=? AND deleted_at IS NULL ORDER BY id;", (owner_id,)
             ).fetchall()
         else:
-            prospects_rows = conn.execute("SELECT * FROM prospects ORDER BY id;").fetchall()
+            prospects_rows = conn.execute("SELECT * FROM prospects WHERE deleted_at IS NULL ORDER BY id;").fetchall()
 
     for c in companies:
         c["tags"] = _parse_tags(c.get("tags"))
@@ -1733,7 +2062,7 @@ def upsert_all(data: Dict[str, Any]) -> None:
                             # Teams webhook: RDV pris (v22.1)
                             try:
                                 _p_name = (p.get("name") or "").strip()
-                                _c_row = cur.execute("SELECT groupe FROM companies WHERE id=?;", (p.get("company_id"),)).fetchone()
+                                _c_row = cur.execute("SELECT groupe FROM companies WHERE id=? AND owner_id=?;", (p.get("company_id"), uid)).fetchone()
                                 _c_name = _c_row[0] if _c_row else ""
                                 _prefix = _get_user_prefix(uid)
                                 _card = _build_adaptive_card(
@@ -1958,6 +2287,23 @@ def seed_from_initial() -> dict:
 
 def _now_iso() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
+
+
+def _audit_log(action: str, entity: str, entity_id: int | None = None,
+               old_value: str | None = None, new_value: str | None = None):
+    """v23.5: Write an entry to the audit trail."""
+    uid = _uid()
+    if not uid:
+        return
+    ip = request.remote_addr or "unknown"
+    try:
+        with _conn() as conn:
+            conn.execute(
+                "INSERT INTO audit_log (user_id, action, entity, entity_id, old_value, new_value, ip, createdAt) VALUES (?,?,?,?,?,?,?,?);",
+                (uid, action, entity, entity_id, old_value, new_value, ip, _now_iso())
+            )
+    except Exception:
+        pass  # Never break the main flow for audit logging
 
 
 def _today_iso() -> str:
@@ -2419,15 +2765,38 @@ def api_candidates_list():
     uid = _uid()
     if not uid:
         return jsonify(ok=False, error="Non authentifié"), 401
+    # v23.5: optional pagination via ?page=&limit=
+    page_param = request.args.get("page")
+    if page_param is not None:
+        try:
+            page = max(1, int(page_param))
+            limit = min(500, max(1, int(request.args.get("limit") or 100)))
+        except (TypeError, ValueError):
+            page, limit = 1, 100
+        offset = (page - 1) * limit
+        with _conn() as conn:
+            total = int(conn.execute("SELECT COUNT(*) FROM candidates WHERE owner_id=? AND deleted_at IS NULL;", (uid,)).fetchone()[0])
+            rows = conn.execute(
+                "SELECT * FROM candidates WHERE owner_id=? AND deleted_at IS NULL ORDER BY COALESCE(updatedAt, createdAt) DESC, id DESC LIMIT ? OFFSET ?;",
+                (uid, limit, offset),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["skills"] = _parse_json_str_list(d.get("skills"))
+            d["company_ids"] = _parse_json_int_list(d.get("company_ids"))
+            out.append(d)
+        from math import ceil
+        return jsonify(ok=True, candidates=out, pagination={"page": page, "limit": limit, "total": total, "pages": ceil(total / limit) if limit else 1})
+    # Non-paginated (backward compatible)
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM candidates WHERE owner_id=? ORDER BY COALESCE(updatedAt, createdAt) DESC, id DESC;",
+            "SELECT * FROM candidates WHERE owner_id=? AND deleted_at IS NULL ORDER BY COALESCE(updatedAt, createdAt) DESC, id DESC;",
             (uid,),
         ).fetchall()
     out: List[Dict[str, Any]] = []
     for r in rows:
         d = dict(r)
-        # normalize optional JSON list columns
         d["skills"] = _parse_json_str_list(d.get("skills"))
         d["company_ids"] = _parse_json_int_list(d.get("company_ids"))
         out.append(d)
@@ -2603,7 +2972,9 @@ def api_candidates_delete():
     if not cid:
         return jsonify({"ok": False, "error": "id is required"}), 400
     with _conn() as conn:
-        conn.execute("DELETE FROM candidates WHERE id=? AND owner_id=?;", (int(cid), uid))
+        # v23.5: soft delete instead of hard delete
+        conn.execute("UPDATE candidates SET deleted_at=? WHERE id=? AND owner_id=?;", (_now_iso(), int(cid), uid))
+    _audit_log("soft_delete", "candidate", int(cid))
     return jsonify({"ok": True})
 
 @app.post("/api/candidates/status")
@@ -3312,6 +3683,11 @@ def api_search():
         limit = max(1, min(200, limit))
     except Exception:
         limit = 50
+    # v23.5: pagination offset support
+    try:
+        offset = max(0, int(request.args.get("offset") or "0"))
+    except Exception:
+        offset = 0
 
     if not q:
         return jsonify({"prospects": [], "companies": [], "pushLogs": [], "candidates": [], "counts": {"prospects":0,"companies":0,"pushLogs":0,"candidates":0}, "limit": limit})
@@ -3328,11 +3704,11 @@ def api_search():
                 SELECT p.*, c.groupe AS company_groupe, c.site AS company_site
                 FROM prospects p
                 LEFT JOIN companies c ON c.id = p.company_id
-                WHERE p.owner_id=? AND (p.name LIKE ? OR p.email LIKE ? OR p.telephone LIKE ? OR p.linkedin LIKE ? OR p.fonction LIKE ? OR p.notes LIKE ? OR p.callNotes LIKE ?)
+                WHERE p.owner_id=? AND p.deleted_at IS NULL AND (p.name LIKE ? OR p.email LIKE ? OR p.telephone LIKE ? OR p.linkedin LIKE ? OR p.fonction LIKE ? OR p.notes LIKE ? OR p.callNotes LIKE ?)
                 ORDER BY p.id DESC
-                LIMIT ?;
+                LIMIT ? OFFSET ?;
                 ''',
-                (uid, like, like, like, like, like, like, like, limit),
+                (uid, like, like, like, like, like, like, like, limit, offset),
             ).fetchall()
         ]
         companies = [
@@ -3340,11 +3716,11 @@ def api_search():
             for r in conn.execute(
                 '''
                 SELECT * FROM companies
-                WHERE owner_id=? AND (groupe LIKE ? OR site LIKE ? OR phone LIKE ? OR notes LIKE ? OR tags LIKE ? OR website LIKE ? OR industry LIKE ? OR stack LIKE ? OR pain_points LIKE ?)
+                WHERE owner_id=? AND deleted_at IS NULL AND (groupe LIKE ? OR site LIKE ? OR phone LIKE ? OR notes LIKE ? OR tags LIKE ? OR website LIKE ? OR industry LIKE ? OR stack LIKE ? OR pain_points LIKE ?)
                 ORDER BY id DESC
-                LIMIT ?;
+                LIMIT ? OFFSET ?;
                 ''',
-                (uid, like, like, like, like, like, like, like, like, like, limit),
+                (uid, like, like, like, like, like, like, like, like, like, limit, offset),
             ).fetchall()
         ]
         push_logs = [
@@ -3357,9 +3733,9 @@ def api_search():
                 LEFT JOIN companies c ON c.id = p.company_id
                 WHERE l.to_email LIKE ? OR l.subject LIKE ? OR l.body LIKE ? OR p.name LIKE ? OR p.email LIKE ? OR c.groupe LIKE ? OR c.site LIKE ?
                 ORDER BY l.id DESC
-                LIMIT ?;
+                LIMIT ? OFFSET ?;
                 ''',
-                (uid, like, like, like, like, like, like, like, limit),
+                (uid, like, like, like, like, like, like, like, limit, offset),
             ).fetchall()
         ]
         candidates = [
@@ -3367,11 +3743,11 @@ def api_search():
             for r in conn.execute(
                 '''
                 SELECT * FROM candidates
-                WHERE owner_id=? AND (name LIKE ? OR role LIKE ? OR location LIKE ? OR tech LIKE ? OR linkedin LIKE ? OR notes LIKE ?)
+                WHERE owner_id=? AND deleted_at IS NULL AND (name LIKE ? OR role LIKE ? OR location LIKE ? OR tech LIKE ? OR linkedin LIKE ? OR notes LIKE ?)
                 ORDER BY COALESCE(updatedAt, createdAt) DESC, id DESC
-                LIMIT ?;
+                LIMIT ? OFFSET ?;
                 ''',
-                (uid, like, like, like, like, like, like, limit),
+                (uid, like, like, like, like, like, like, limit, offset),
             ).fetchall()
         ]
 
@@ -3388,6 +3764,7 @@ def api_search():
             "candidates": len(candidates),
         },
         "limit": limit,
+        "offset": offset,
         # legacy key for backward compatibility
         "push_logs": push_logs,
     }
@@ -4440,6 +4817,7 @@ def api_duplicates_merge():
         conn.execute("UPDATE push_logs SET prospect_id=? WHERE prospect_id=?;", (keep_id, merge_id))
         conn.execute("DELETE FROM prospects WHERE id=? AND owner_id=?;", (merge_id, uid))
 
+    _audit_log("merge_delete", "prospect", merge_id, new_value=str(keep_id))
     return jsonify({"ok": True})
 
 
@@ -4496,6 +4874,7 @@ def api_companies_merge():
         conn.execute("UPDATE prospects SET company_id=? WHERE company_id=? AND owner_id=?;", (keep_id, merge_id, uid))
         conn.execute("DELETE FROM companies WHERE id=? AND owner_id=?;", (merge_id, uid))
 
+    _audit_log("merge_delete", "company", merge_id, new_value=str(keep_id))
     return jsonify({"ok": True})
 
 
@@ -4694,7 +5073,7 @@ def api_export_candidates_csv():
     if not uid:
         return jsonify(ok=False, error="Non authentifié"), 401
     with _conn() as conn:
-        rows = conn.execute("SELECT * FROM candidates WHERE owner_id=? ORDER BY id DESC;", (uid,)).fetchall()
+        rows = conn.execute("SELECT * FROM candidates WHERE owner_id=? AND deleted_at IS NULL ORDER BY id DESC;", (uid,)).fetchall()
     output = BytesIO()
     import io
     text_io = io.TextIOWrapper(output, encoding="utf-8", newline="")
@@ -4885,12 +5264,20 @@ def _recompute_last_push_dates(conn: sqlite3.Connection, prospect_id: int) -> Di
     if row and row["sentAt"]:
         out["pushLinkedInSentAt"] = str(row["sentAt"])
 
-    # update prospects table if columns exist
-    conn.execute("UPDATE prospects SET pushEmailSentAt=? WHERE id=?;", (out["pushEmailSentAt"], prospect_id))
-    try:
-        conn.execute("UPDATE prospects SET pushLinkedInSentAt=? WHERE id=?;", (out["pushLinkedInSentAt"], prospect_id))
-    except sqlite3.OperationalError:
-        pass
+    # update prospects table if columns exist (v23.4: scope by owner_id for safety)
+    uid = _uid()
+    if uid:
+        conn.execute("UPDATE prospects SET pushEmailSentAt=? WHERE id=? AND owner_id=?;", (out["pushEmailSentAt"], prospect_id, uid))
+        try:
+            conn.execute("UPDATE prospects SET pushLinkedInSentAt=? WHERE id=? AND owner_id=?;", (out["pushLinkedInSentAt"], prospect_id, uid))
+        except sqlite3.OperationalError:
+            pass
+    else:
+        conn.execute("UPDATE prospects SET pushEmailSentAt=? WHERE id=?;", (out["pushEmailSentAt"], prospect_id))
+        try:
+            conn.execute("UPDATE prospects SET pushLinkedInSentAt=? WHERE id=?;", (out["pushLinkedInSentAt"], prospect_id))
+        except sqlite3.OperationalError:
+            pass
     return out
 
 @app.post("/api/push-logs/undo_last")
@@ -5249,12 +5636,84 @@ def api_company_update():
     uid = _uid()
     if not uid:
         return jsonify(ok=False, error="Non authentifié"), 401
+    # v23.4: Defensive check — only whitelisted column names can appear in SQL
+    _COMPANY_ALLOWED_COLS = frozenset(allowed)
+    assert all(k in _COMPANY_ALLOWED_COLS for k in fields), "Invalid column name"
     sets = ", ".join([f"{k}=?" for k in fields.keys()])
     vals = list(fields.values())
     with _conn() as conn:
         conn.execute(f"UPDATE companies SET {sets} WHERE id=? AND owner_id=?;", (*vals, cid_i, uid))
         row = conn.execute("SELECT * FROM companies WHERE id=? AND owner_id=?;", (cid_i, uid)).fetchone()
+    _audit_log("update", "company", cid_i, new_value=json.dumps(fields, ensure_ascii=False))
     return jsonify({"ok": True, "company": dict(row) if row else None})
+
+
+@app.get("/api/audit-log")
+def api_audit_log():
+    """v23.5: Retrieve audit trail. Admin only."""
+    user = _get_current_user()
+    if not user or user.get("role") != "admin":
+        return jsonify(ok=False, error="Admin requis"), 403
+    try:
+        page = max(1, int(request.args.get("page") or 1))
+        limit = min(200, max(1, int(request.args.get("limit") or 50)))
+    except (TypeError, ValueError):
+        page, limit = 1, 50
+    offset = (page - 1) * limit
+    entity = request.args.get("entity")
+    entity_id = request.args.get("entity_id")
+    with _conn() as conn:
+        if entity and entity_id:
+            rows = conn.execute(
+                "SELECT * FROM audit_log WHERE entity=? AND entity_id=? ORDER BY id DESC LIMIT ? OFFSET ?;",
+                (entity, int(entity_id), limit, offset)
+            ).fetchall()
+            total = int(conn.execute("SELECT COUNT(*) FROM audit_log WHERE entity=? AND entity_id=?;", (entity, int(entity_id))).fetchone()[0])
+        elif entity:
+            rows = conn.execute(
+                "SELECT * FROM audit_log WHERE entity=? ORDER BY id DESC LIMIT ? OFFSET ?;",
+                (entity, limit, offset)
+            ).fetchall()
+            total = int(conn.execute("SELECT COUNT(*) FROM audit_log WHERE entity=?;", (entity,)).fetchone()[0])
+        else:
+            rows = conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ? OFFSET ?;", (limit, offset)).fetchall()
+            total = int(conn.execute("SELECT COUNT(*) FROM audit_log;").fetchone()[0])
+    from math import ceil
+    return jsonify(ok=True, logs=[dict(r) for r in rows], pagination={"page": page, "limit": limit, "total": total, "pages": ceil(total / limit) if limit else 1})
+
+
+@app.post("/api/soft-deleted/restore")
+def api_soft_deleted_restore():
+    """v23.5: Restore a soft-deleted entity."""
+    uid = _uid()
+    if not uid:
+        return jsonify(ok=False, error="Non authentifié"), 401
+    payload = request.get_json(force=True, silent=True) or {}
+    entity = payload.get("entity")
+    entity_id = payload.get("id")
+    if entity not in ("prospect", "company", "candidate") or not entity_id:
+        return jsonify(ok=False, error="entity and id required"), 400
+    table = {"prospect": "prospects", "company": "companies", "candidate": "candidates"}[entity]
+    with _conn() as conn:
+        conn.execute(f"UPDATE {table} SET deleted_at=NULL WHERE id=? AND owner_id=?;", (int(entity_id), uid))
+    _audit_log("restore", entity, int(entity_id))
+    return jsonify(ok=True)
+
+
+@app.post("/api/soft-deleted/purge")
+def api_soft_deleted_purge():
+    """v23.5: Permanently delete items soft-deleted more than 30 days ago. Admin only."""
+    user = _get_current_user()
+    if not user or user.get("role") != "admin":
+        return jsonify(ok=False, error="Admin requis"), 403
+    cutoff = (datetime.datetime.now() - datetime.timedelta(days=30)).isoformat(timespec="seconds")
+    purged = {}
+    with _conn() as conn:
+        for tbl in ("prospects", "companies", "candidates"):
+            cur = conn.execute(f"DELETE FROM {tbl} WHERE deleted_at IS NOT NULL AND deleted_at < ?;", (cutoff,))
+            purged[tbl] = cur.rowcount
+    _audit_log("purge", "system", new_value=json.dumps(purged))
+    return jsonify(ok=True, purged=purged)
 
 
 @app.post("/api/company/events/add")
@@ -5383,9 +5842,9 @@ def api_prospect_mark_done():
             )
         # Teams webhook: CR (v22.1)
         try:
-            p_row = conn.execute("SELECT name, company_id FROM prospects WHERE id=?;", (int(pid),)).fetchone()
+            p_row = conn.execute("SELECT name, company_id FROM prospects WHERE id=? AND owner_id=?;", (int(pid), uid)).fetchone()
             p_name = p_row["name"] if p_row else "?"
-            c_row = conn.execute("SELECT groupe FROM companies WHERE id=?;", (p_row["company_id"],)).fetchone() if p_row else None
+            c_row = conn.execute("SELECT groupe FROM companies WHERE id=? AND owner_id=?;", (p_row["company_id"], uid)).fetchone() if p_row else None
             c_name = c_row["groupe"] if c_row else ""
             prefix = _get_user_prefix(uid)
             card = _build_adaptive_card(
@@ -5465,6 +5924,62 @@ def api_prospects_bulk_field_update():
     return jsonify(ok=True, updated=updated)
 
 
+@app.post("/api/prospects/bulk-status-tags")
+def api_prospects_bulk_status_tags():
+    """v23.5: Bulk update statut and/or tags for selected prospects."""
+    chk = _require_same_origin()
+    if chk:
+        return chk
+    uid = _uid()
+    if not uid:
+        return jsonify(ok=False, error="Non authentifié"), 401
+    payload = request.get_json(force=True, silent=True) or {}
+    ids = payload.get("ids")
+    new_statut = payload.get("statut")  # optional
+    add_tags = payload.get("add_tags")  # optional list of tags to add
+    remove_tags = payload.get("remove_tags")  # optional list of tags to remove
+    if not ids or not isinstance(ids, list):
+        return jsonify(ok=False, error="ids (array) required"), 400
+    if not new_statut and not add_tags and not remove_tags:
+        return jsonify(ok=False, error="statut, add_tags or remove_tags required"), 400
+    updated = 0
+    now = _now_iso()
+    with _conn() as conn:
+        for pid in ids:
+            try:
+                pid = int(pid)
+            except (TypeError, ValueError):
+                continue
+            row = conn.execute("SELECT id, statut, tags FROM prospects WHERE id=? AND owner_id=? AND deleted_at IS NULL;", (pid, uid)).fetchone()
+            if not row:
+                continue
+            sets = []
+            vals = []
+            if new_statut:
+                sets.append("statut=?")
+                vals.append(new_statut)
+            if add_tags or remove_tags:
+                # Parse existing tags
+                raw = row["tags"] or "[]"
+                try:
+                    existing = json.loads(raw) if raw.startswith("[") else [t.strip() for t in raw.split(",") if t.strip()]
+                except Exception:
+                    existing = []
+                if add_tags and isinstance(add_tags, list):
+                    for t in add_tags:
+                        if t and t not in existing:
+                            existing.append(t)
+                if remove_tags and isinstance(remove_tags, list):
+                    existing = [t for t in existing if t not in remove_tags]
+                sets.append("tags=?")
+                vals.append(json.dumps(existing, ensure_ascii=False))
+            vals.extend([pid, uid])
+            conn.execute(f"UPDATE prospects SET {', '.join(sets)} WHERE id=? AND owner_id=?;", vals)
+            updated += 1
+    _audit_log("bulk_status_tags", "prospect", new_value=json.dumps({"ids": ids[:20], "statut": new_statut, "add_tags": add_tags, "remove_tags": remove_tags}, ensure_ascii=False))
+    return jsonify(ok=True, updated=updated)
+
+
 @app.post("/api/ia-enrichment-log")
 def api_ia_enrichment_log():
     """Log an IA enrichment event to the entity's timeline."""
@@ -5519,29 +6034,36 @@ def api_ia_enrichment_log():
 
 @app.get("/api/health")
 def api_health():
-    current_db = _current_user_db_path()
-    info = {
-        "db_path": str(current_db),
-        "db_exists": current_db.exists(),
-        "central_db_path": str(DB_PATH),
-        "per_user_db": str(current_db) != str(DB_PATH),
-    }
+    """Health check endpoint. Sensitive details only for admins (v23.4)."""
+    info: Dict[str, Any] = {"status": "ok", "version": APP_VERSION}
+    is_admin = False
+    user = _get_current_user()
+    if user and user.get('role') == 'admin':
+        is_admin = True
+
+    _table_names = ("prospects", "companies", "push_logs", "candidates")
     try:
         with _conn() as con:
             cur = con.cursor()
-            # Best-effort counts: only if tables exist
-            def _count(table: str) -> int | None:
+            for tbl in _table_names:
                 try:
-                    return int(cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                    info[f"{tbl}_count"] = int(cur.execute(
+                        f"SELECT COUNT(*) FROM {tbl}"  # noqa: table names are hardcoded above
+                    ).fetchone()[0])
                 except Exception:
-                    return None
-
-            info["prospects_count"] = _count("prospects")
-            info["companies_count"] = _count("companies")
-            info["push_logs_count"] = _count("push_logs")
-            info["candidates_count"] = _count("candidates")
+                    info[f"{tbl}_count"] = None
     except Exception as e:
-        info["error"] = str(e)
+        info["db_error"] = "unavailable"
+        if is_admin:
+            info["db_error_detail"] = str(e)
+
+    # Only expose paths to admin users
+    if is_admin:
+        current_db = _current_user_db_path()
+        info["db_path"] = str(current_db)
+        info["db_exists"] = current_db.exists()
+        info["per_user_db"] = str(current_db) != str(DB_PATH)
+
     return jsonify(info)
 
 @app.get("/api/data")
@@ -5549,6 +6071,84 @@ def api_data():
     uid = _uid()
     if uid is None:
         return jsonify(ok=False, error="Non authentifié"), 401
+    # v23.4: Optional pagination via ?page=&limit= query params
+    page_param = request.args.get("page")
+    limit_param = request.args.get("limit")
+    if page_param is not None:
+        # Paginated mode
+        try:
+            page = max(1, int(page_param))
+            limit = min(500, max(1, int(limit_param or 200)))
+        except (TypeError, ValueError):
+            return jsonify(ok=False, error="page/limit must be integers"), 400
+        offset = (page - 1) * limit
+        # v23.5: lazy=1 excludes heavy fields (callNotes, notes) for faster list loading
+        lazy = request.args.get("lazy") == "1"
+        with _conn() as conn:
+            # Companies: always return all (typically small dataset)
+            companies = [dict(r) for r in conn.execute(
+                "SELECT * FROM companies WHERE owner_id=? AND deleted_at IS NULL ORDER BY id;", (uid,)
+            ).fetchall()]
+            # Prospects: paginated
+            total = int(conn.execute(
+                "SELECT COUNT(*) FROM prospects WHERE owner_id=? AND deleted_at IS NULL;", (uid,)
+            ).fetchone()[0])
+            prospects_rows = conn.execute(
+                "SELECT * FROM prospects WHERE owner_id=? AND deleted_at IS NULL ORDER BY id LIMIT ? OFFSET ?;",
+                (uid, limit, offset)
+            ).fetchall()
+            max_pid = int(conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM prospects WHERE owner_id=?;", (uid,)
+            ).fetchone()[0])
+            max_cid = int(conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM companies WHERE owner_id=?;", (uid,)
+            ).fetchone()[0])
+        # Parse tags/callNotes
+        from math import ceil
+        for c in companies:
+            t = c.get("tags")
+            if t and isinstance(t, str):
+                try:
+                    c["tags"] = json.loads(t)
+                except Exception:
+                    c["tags"] = [x.strip() for x in t.split(",") if x.strip()]
+            elif not t:
+                c["tags"] = []
+        prospects = []
+        for r in prospects_rows:
+            d = dict(r)
+            if lazy:
+                # v23.5: exclude heavy fields for list view performance
+                d.pop("callNotes", None)
+                d.pop("notes", None)
+            else:
+                try:
+                    d["callNotes"] = json.loads(d.get("callNotes") or "[]")
+                except Exception:
+                    d["callNotes"] = []
+            t = d.get("tags")
+            if t and isinstance(t, str):
+                try:
+                    d["tags"] = json.loads(t)
+                except Exception:
+                    d["tags"] = [x.strip() for x in t.split(",") if x.strip()]
+            elif not t:
+                d["tags"] = []
+            d["is_contact"] = int(d.get("is_contact") or 0)
+            prospects.append(d)
+        return jsonify({
+            "companies": companies,
+            "prospects": prospects,
+            "maxProspectId": max_pid,
+            "maxCompanyId": max_cid,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "pages": ceil(total / limit) if limit else 1,
+            }
+        })
+    # Non-paginated mode (backward compatible)
     payload = read_all(owner_id=uid)
     with _conn() as conn:
         payload["maxProspectId"] = int(conn.execute(
