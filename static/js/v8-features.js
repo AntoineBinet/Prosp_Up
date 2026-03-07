@@ -865,4 +865,232 @@
             .catch(function () { /* silent */ });
     }
 
+    // ────────────── v23.5: SWIPE-TO-ACTION (mobile) ──────────────
+
+    function _initSwipeActions() {
+        if (!window.matchMedia('(max-width: 768px)').matches) return;
+        var swipeStartX = 0, swipeStartY = 0, swipeRow = null, swipeOverlay = null;
+        var THRESHOLD = 70;
+
+        document.addEventListener('touchstart', function (e) {
+            var row = e.target.closest('tr[data-id]');
+            if (!row) return;
+            swipeRow = row;
+            swipeStartX = e.touches[0].clientX;
+            swipeStartY = e.touches[0].clientY;
+        }, { passive: true });
+
+        document.addEventListener('touchmove', function (e) {
+            if (!swipeRow) return;
+            var dx = e.touches[0].clientX - swipeStartX;
+            var dy = e.touches[0].clientY - swipeStartY;
+            if (Math.abs(dy) > Math.abs(dx)) { swipeRow = null; return; }
+            if (Math.abs(dx) > 20) {
+                swipeRow.style.transform = 'translateX(' + dx + 'px)';
+                swipeRow.style.transition = 'none';
+                if (!swipeOverlay) {
+                    swipeOverlay = document.createElement('div');
+                    swipeOverlay.className = 'swipe-action-overlay';
+                    swipeOverlay.innerHTML = dx > 0
+                        ? '<span class="swipe-action-icon swipe-call">📞</span>'
+                        : '<span class="swipe-action-icon swipe-status">🔄</span>';
+                    swipeRow.style.position = 'relative';
+                    swipeRow.appendChild(swipeOverlay);
+                } else {
+                    swipeOverlay.innerHTML = dx > 0
+                        ? '<span class="swipe-action-icon swipe-call">📞</span>'
+                        : '<span class="swipe-action-icon swipe-status">🔄</span>';
+                }
+            }
+        }, { passive: true });
+
+        document.addEventListener('touchend', function (e) {
+            if (!swipeRow) return;
+            var dx = e.changedTouches[0].clientX - swipeStartX;
+            swipeRow.style.transform = '';
+            swipeRow.style.transition = 'transform 0.2s ease';
+            if (swipeOverlay) { swipeOverlay.remove(); swipeOverlay = null; }
+            var pid = swipeRow.getAttribute('data-id');
+            if (Math.abs(dx) > THRESHOLD && pid) {
+                window.haptic(15);
+                if (dx > 0) {
+                    // Swipe right → quick call
+                    var tel = swipeRow.querySelector('[data-field="telephone"]');
+                    if (tel && tel.textContent.trim()) {
+                        window.open('tel:' + tel.textContent.trim());
+                    } else {
+                        window.showToast('Pas de numéro de téléphone', 'warning', 2000);
+                    }
+                } else {
+                    // Swipe left → cycle status
+                    _cycleProspectStatus(pid);
+                }
+            }
+            swipeRow = null;
+        }, { passive: true });
+    }
+
+    function _cycleProspectStatus(pid) {
+        var statuses = ['À contacter', 'Contacté', 'En discussion', 'Rendez-vous', 'Proposition', 'Gagné', 'Perdu'];
+        var currentData = window._v8Data || (typeof data !== 'undefined' ? data : null);
+        if (!currentData || !currentData.prospects) return;
+        var prospect = currentData.prospects.find(function (p) { return String(p.id) === String(pid); });
+        if (!prospect) return;
+        var idx = statuses.indexOf(prospect.statut || '');
+        var next = statuses[(idx + 1) % statuses.length];
+        var oldStatut = prospect.statut;
+        prospect.statut = next;
+
+        fetch('/api/prospects/bulk-status-tags', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: [parseInt(pid)], statut: next })
+        }).then(function (r) { return r.json(); }).then(function (json) {
+            if (json.ok) {
+                window.showToast('Statut → ' + next, 'success', 2000);
+                if (typeof window.filterProspects === 'function') window.filterProspects();
+                // Celebration for "Gagné"
+                if (next === 'Gagné') _celebrate();
+                // Push undo
+                window.pushUndo('Statut ' + next + ' → ' + oldStatut, function () {
+                    prospect.statut = oldStatut;
+                    fetch('/api/prospects/bulk-status-tags', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ids: [parseInt(pid)], statut: oldStatut })
+                    });
+                    if (typeof window.filterProspects === 'function') window.filterProspects();
+                });
+            }
+        });
+    }
+
+    // ────────────── v23.5: BREADCRUMBS ──────────────
+
+    function _initBreadcrumbs() {
+        var page = document.body.getAttribute('data-page');
+        if (!page || page === 'login') return;
+        var header = document.querySelector('.content-header') || document.querySelector('header');
+        if (!header) return;
+
+        var crumbs = [{ label: '🏠', href: '/dashboard' }];
+        var pageMap = {
+            'dashboard': { label: 'Dashboard' },
+            'prospects': { label: 'Prospects' },
+            'entreprises': { label: 'Entreprises' },
+            'sourcing': { label: 'Sourcing' },
+            'focus': { label: 'Focus' },
+            'push': { label: 'Push' },
+            'stats': { label: 'Statistiques' },
+            'search': { label: 'Recherche' },
+            'settings': { label: 'Paramètres' },
+            'templates': { label: 'Templates' },
+            'company': { label: 'Entreprise', parent: 'entreprises' },
+            'candidate': { label: 'Candidat', parent: 'sourcing' },
+            'duplicates': { label: 'Doublons' },
+            'calendrier': { label: 'Calendrier' },
+            'kpi': { label: 'KPI' },
+            'help': { label: 'Aide' },
+        };
+
+        var info = pageMap[page];
+        if (!info) return;
+        if (info.parent && pageMap[info.parent]) {
+            crumbs.push({ label: pageMap[info.parent].label, href: '/' + info.parent });
+        }
+        crumbs.push({ label: info.label });
+
+        var nav = document.createElement('nav');
+        nav.className = 'breadcrumbs';
+        nav.setAttribute('aria-label', 'Fil d\'Ariane');
+        nav.innerHTML = crumbs.map(function (c, i) {
+            if (i === crumbs.length - 1) return '<span class="breadcrumb-current">' + c.label + '</span>';
+            return '<a href="' + c.href + '" class="breadcrumb-link">' + c.label + '</a><span class="breadcrumb-sep">›</span>';
+        }).join('');
+        header.insertBefore(nav, header.firstChild);
+    }
+
+    // ────────────── v23.5: QUICK PREVIEW PANEL ──────────────
+
+    window.openQuickPreview = function (prospectId) {
+        var existing = document.getElementById('quickPreviewPanel');
+        if (existing) existing.remove();
+
+        var panel = document.createElement('div');
+        panel.id = 'quickPreviewPanel';
+        panel.className = 'quick-preview-panel';
+        panel.innerHTML = '<div class="qp-header"><span class="qp-title">Chargement…</span><button class="qp-close" onclick="document.getElementById(\'quickPreviewPanel\').classList.add(\'qp-exit\');setTimeout(function(){var p=document.getElementById(\'quickPreviewPanel\');if(p)p.remove();},300)">×</button></div><div class="qp-body"><div class="skeleton-loader"></div></div>';
+        document.body.appendChild(panel);
+        requestAnimationFrame(function () { panel.classList.add('qp-open'); });
+
+        // Load prospect data
+        var currentData = window._v8Data || (typeof data !== 'undefined' ? data : null);
+        if (!currentData) return;
+        var prospect = (currentData.prospects || []).find(function (p) { return p.id === prospectId || String(p.id) === String(prospectId); });
+        if (!prospect) { panel.querySelector('.qp-title').textContent = 'Non trouvé'; return; }
+        var company = (currentData.companies || []).find(function (c) { return c.id === prospect.company_id; });
+
+        var statusColors = {
+            'À contacter': '#6366f1', 'Contacté': '#3b82f6', 'En discussion': '#f59e0b',
+            'Rendez-vous': '#8b5cf6', 'Proposition': '#ec4899', 'Gagné': '#10b981', 'Perdu': '#ef4444'
+        };
+        var statusColor = statusColors[prospect.statut] || '#64748b';
+
+        panel.querySelector('.qp-title').textContent = _escToastHtml(prospect.name || 'Sans nom');
+        panel.querySelector('.qp-body').innerHTML =
+            '<div class="qp-status" style="background:' + statusColor + '">' + _escToastHtml(prospect.statut || 'N/A') + '</div>' +
+            (company ? '<div class="qp-field"><strong>🏢</strong> ' + _escToastHtml(company.groupe || '') + '</div>' : '') +
+            (prospect.fonction ? '<div class="qp-field"><strong>💼</strong> ' + _escToastHtml(prospect.fonction) + '</div>' : '') +
+            (prospect.email ? '<div class="qp-field"><strong>📧</strong> <a href="mailto:' + _escToastHtml(prospect.email) + '">' + _escToastHtml(prospect.email) + '</a></div>' : '') +
+            (prospect.telephone ? '<div class="qp-field"><strong>📞</strong> <a href="tel:' + _escToastHtml(prospect.telephone) + '">' + _escToastHtml(prospect.telephone) + '</a></div>' : '') +
+            (prospect.linkedin ? '<div class="qp-field"><strong>🔗</strong> <a href="' + _escToastHtml(prospect.linkedin) + '" target="_blank">LinkedIn</a></div>' : '') +
+            (prospect.nextFollowUp ? '<div class="qp-field"><strong>📅</strong> Relance: ' + _escToastHtml(prospect.nextFollowUp.slice(0, 10)) + '</div>' : '') +
+            (prospect.nextAction ? '<div class="qp-field"><strong>📝</strong> ' + _escToastHtml(prospect.nextAction) + '</div>' : '') +
+            '<div class="qp-actions">' +
+            '<a href="/?open=' + prospect.id + '" class="btn btn-primary btn-sm">Ouvrir la fiche</a>' +
+            '</div>';
+    };
+
+    // ────────────── v23.5: CELEBRATIONS ──────────────
+
+    function _celebrate() {
+        var colors = ['#10b981', '#3b82f6', '#f59e0b', '#ec4899', '#8b5cf6', '#ef4444'];
+        var container = document.createElement('div');
+        container.className = 'confetti-container';
+        container.setAttribute('aria-hidden', 'true');
+        document.body.appendChild(container);
+        for (var i = 0; i < 50; i++) {
+            var confetti = document.createElement('div');
+            confetti.className = 'confetti';
+            confetti.style.left = Math.random() * 100 + '%';
+            confetti.style.background = colors[Math.floor(Math.random() * colors.length)];
+            confetti.style.animationDelay = Math.random() * 0.5 + 's';
+            confetti.style.animationDuration = (1.5 + Math.random()) + 's';
+            container.appendChild(confetti);
+        }
+        setTimeout(function () { container.remove(); }, 3000);
+        window.showToast('🎉 Prospect gagné ! Bravo !', 'success', 4000);
+    }
+    window._celebrate = _celebrate;
+
+    // ────────────── v23.5: SKELETON LOADING ──────────────
+
+    window.showSkeletonLoading = function (containerId, rows) {
+        var el = document.getElementById(containerId);
+        if (!el) return;
+        rows = rows || 5;
+        var html = '';
+        for (var i = 0; i < rows; i++) {
+            html += '<div class="skeleton-row"><div class="skeleton-cell" style="width:' + (30 + Math.random() * 40) + '%"></div><div class="skeleton-cell" style="width:' + (20 + Math.random() * 30) + '%"></div><div class="skeleton-cell" style="width:' + (15 + Math.random() * 25) + '%"></div></div>';
+        }
+        el.innerHTML = html;
+    };
+
+    // Patch init
+    var _origInit = document.addEventListener;
+    document.addEventListener('DOMContentLoaded', function () {
+        _initSwipeActions();
+        _initBreadcrumbs();
+    });
+
 })();

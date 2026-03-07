@@ -858,11 +858,27 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
 
--- v23.3: indexes for multi-tenant performance (owner_id filtering)
-CREATE INDEX IF NOT EXISTS idx_prospects_owner ON prospects(owner_id);
-CREATE INDEX IF NOT EXISTS idx_prospects_owner_statut ON prospects(owner_id, statut);
-CREATE INDEX IF NOT EXISTS idx_companies_owner ON companies(owner_id);
-CREATE INDEX IF NOT EXISTS idx_candidates_owner ON candidates(owner_id);
+-- v23.5: search performance indexes (columns that exist in CREATE TABLE)
+CREATE INDEX IF NOT EXISTS idx_prospects_name ON prospects(name);
+CREATE INDEX IF NOT EXISTS idx_prospects_email ON prospects(email);
+CREATE INDEX IF NOT EXISTS idx_companies_groupe ON companies(groupe);
+CREATE INDEX IF NOT EXISTS idx_push_logs_sentAt ON push_logs(sentAt);
+
+-- v23.5: audit trail table
+CREATE TABLE IF NOT EXISTS audit_log (
+    id        INTEGER PRIMARY KEY,
+    user_id   INTEGER NOT NULL,
+    action    TEXT NOT NULL,
+    entity    TEXT NOT NULL,
+    entity_id INTEGER,
+    old_value TEXT,
+    new_value TEXT,
+    ip        TEXT,
+    createdAt TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON audit_log(entity, entity_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_date ON audit_log(createdAt);
 '''
         )
 
@@ -971,6 +987,20 @@ CREATE INDEX IF NOT EXISTS idx_candidates_owner ON candidates(owner_id);
             _add_col("candidates", "email", "TEXT")
         if "owner_id" not in cand_cols:
             _add_col("candidates", "owner_id", "INTEGER")
+
+        # v23.5: Soft delete — add deleted_at column to main tables
+        for tbl in ("prospects", "companies", "candidates"):
+            tbl_cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({tbl});").fetchall()]
+            if "deleted_at" not in tbl_cols:
+                _add_col(tbl, "deleted_at", "TEXT")
+
+        # v23.3+: indexes on owner_id (created after migration adds the column)
+        conn.executescript('''
+            CREATE INDEX IF NOT EXISTS idx_prospects_owner ON prospects(owner_id);
+            CREATE INDEX IF NOT EXISTS idx_prospects_owner_statut ON prospects(owner_id, statut);
+            CREATE INDEX IF NOT EXISTS idx_companies_owner ON companies(owner_id);
+            CREATE INDEX IF NOT EXISTS idx_candidates_owner ON candidates(owner_id);
+        ''')
 
         # App settings (v11) — key/value config store
         conn.executescript('''
@@ -1424,15 +1454,15 @@ def read_all(owner_id: int | None = None) -> Dict[str, Any]:
 
     with _conn() as conn:
         if owner_id is not None:
-            companies = [dict(r) for r in conn.execute("SELECT * FROM companies WHERE owner_id=? ORDER BY id;", (owner_id,)).fetchall()]
+            companies = [dict(r) for r in conn.execute("SELECT * FROM companies WHERE owner_id=? AND deleted_at IS NULL ORDER BY id;", (owner_id,)).fetchall()]
         else:
-            companies = [dict(r) for r in conn.execute("SELECT * FROM companies ORDER BY id;").fetchall()]
+            companies = [dict(r) for r in conn.execute("SELECT * FROM companies WHERE deleted_at IS NULL ORDER BY id;").fetchall()]
         if owner_id is not None:
             prospects_rows = conn.execute(
-                "SELECT * FROM prospects WHERE owner_id=? ORDER BY id;", (owner_id,)
+                "SELECT * FROM prospects WHERE owner_id=? AND deleted_at IS NULL ORDER BY id;", (owner_id,)
             ).fetchall()
         else:
-            prospects_rows = conn.execute("SELECT * FROM prospects ORDER BY id;").fetchall()
+            prospects_rows = conn.execute("SELECT * FROM prospects WHERE deleted_at IS NULL ORDER BY id;").fetchall()
 
     for c in companies:
         c["tags"] = _parse_tags(c.get("tags"))
@@ -2039,6 +2069,23 @@ def _now_iso() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
+def _audit_log(action: str, entity: str, entity_id: int | None = None,
+               old_value: str | None = None, new_value: str | None = None):
+    """v23.5: Write an entry to the audit trail."""
+    uid = _uid()
+    if not uid:
+        return
+    ip = request.remote_addr or "unknown"
+    try:
+        with _conn() as conn:
+            conn.execute(
+                "INSERT INTO audit_log (user_id, action, entity, entity_id, old_value, new_value, ip, createdAt) VALUES (?,?,?,?,?,?,?,?);",
+                (uid, action, entity, entity_id, old_value, new_value, ip, _now_iso())
+            )
+    except Exception:
+        pass  # Never break the main flow for audit logging
+
+
 def _today_iso() -> str:
     return datetime.date.today().isoformat()
 
@@ -2498,15 +2545,38 @@ def api_candidates_list():
     uid = _uid()
     if not uid:
         return jsonify(ok=False, error="Non authentifié"), 401
+    # v23.5: optional pagination via ?page=&limit=
+    page_param = request.args.get("page")
+    if page_param is not None:
+        try:
+            page = max(1, int(page_param))
+            limit = min(500, max(1, int(request.args.get("limit") or 100)))
+        except (TypeError, ValueError):
+            page, limit = 1, 100
+        offset = (page - 1) * limit
+        with _conn() as conn:
+            total = int(conn.execute("SELECT COUNT(*) FROM candidates WHERE owner_id=? AND deleted_at IS NULL;", (uid,)).fetchone()[0])
+            rows = conn.execute(
+                "SELECT * FROM candidates WHERE owner_id=? AND deleted_at IS NULL ORDER BY COALESCE(updatedAt, createdAt) DESC, id DESC LIMIT ? OFFSET ?;",
+                (uid, limit, offset),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["skills"] = _parse_json_str_list(d.get("skills"))
+            d["company_ids"] = _parse_json_int_list(d.get("company_ids"))
+            out.append(d)
+        from math import ceil
+        return jsonify(ok=True, candidates=out, pagination={"page": page, "limit": limit, "total": total, "pages": ceil(total / limit) if limit else 1})
+    # Non-paginated (backward compatible)
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM candidates WHERE owner_id=? ORDER BY COALESCE(updatedAt, createdAt) DESC, id DESC;",
+            "SELECT * FROM candidates WHERE owner_id=? AND deleted_at IS NULL ORDER BY COALESCE(updatedAt, createdAt) DESC, id DESC;",
             (uid,),
         ).fetchall()
     out: List[Dict[str, Any]] = []
     for r in rows:
         d = dict(r)
-        # normalize optional JSON list columns
         d["skills"] = _parse_json_str_list(d.get("skills"))
         d["company_ids"] = _parse_json_int_list(d.get("company_ids"))
         out.append(d)
@@ -2682,7 +2752,9 @@ def api_candidates_delete():
     if not cid:
         return jsonify({"ok": False, "error": "id is required"}), 400
     with _conn() as conn:
-        conn.execute("DELETE FROM candidates WHERE id=? AND owner_id=?;", (int(cid), uid))
+        # v23.5: soft delete instead of hard delete
+        conn.execute("UPDATE candidates SET deleted_at=? WHERE id=? AND owner_id=?;", (_now_iso(), int(cid), uid))
+    _audit_log("soft_delete", "candidate", int(cid))
     return jsonify({"ok": True})
 
 @app.post("/api/candidates/status")
@@ -3391,6 +3463,11 @@ def api_search():
         limit = max(1, min(200, limit))
     except Exception:
         limit = 50
+    # v23.5: pagination offset support
+    try:
+        offset = max(0, int(request.args.get("offset") or "0"))
+    except Exception:
+        offset = 0
 
     if not q:
         return jsonify({"prospects": [], "companies": [], "pushLogs": [], "candidates": [], "counts": {"prospects":0,"companies":0,"pushLogs":0,"candidates":0}, "limit": limit})
@@ -3407,11 +3484,11 @@ def api_search():
                 SELECT p.*, c.groupe AS company_groupe, c.site AS company_site
                 FROM prospects p
                 LEFT JOIN companies c ON c.id = p.company_id
-                WHERE p.owner_id=? AND (p.name LIKE ? OR p.email LIKE ? OR p.telephone LIKE ? OR p.linkedin LIKE ? OR p.fonction LIKE ? OR p.notes LIKE ? OR p.callNotes LIKE ?)
+                WHERE p.owner_id=? AND p.deleted_at IS NULL AND (p.name LIKE ? OR p.email LIKE ? OR p.telephone LIKE ? OR p.linkedin LIKE ? OR p.fonction LIKE ? OR p.notes LIKE ? OR p.callNotes LIKE ?)
                 ORDER BY p.id DESC
-                LIMIT ?;
+                LIMIT ? OFFSET ?;
                 ''',
-                (uid, like, like, like, like, like, like, like, limit),
+                (uid, like, like, like, like, like, like, like, limit, offset),
             ).fetchall()
         ]
         companies = [
@@ -3419,11 +3496,11 @@ def api_search():
             for r in conn.execute(
                 '''
                 SELECT * FROM companies
-                WHERE owner_id=? AND (groupe LIKE ? OR site LIKE ? OR phone LIKE ? OR notes LIKE ? OR tags LIKE ? OR website LIKE ? OR industry LIKE ? OR stack LIKE ? OR pain_points LIKE ?)
+                WHERE owner_id=? AND deleted_at IS NULL AND (groupe LIKE ? OR site LIKE ? OR phone LIKE ? OR notes LIKE ? OR tags LIKE ? OR website LIKE ? OR industry LIKE ? OR stack LIKE ? OR pain_points LIKE ?)
                 ORDER BY id DESC
-                LIMIT ?;
+                LIMIT ? OFFSET ?;
                 ''',
-                (uid, like, like, like, like, like, like, like, like, like, limit),
+                (uid, like, like, like, like, like, like, like, like, like, limit, offset),
             ).fetchall()
         ]
         push_logs = [
@@ -3436,9 +3513,9 @@ def api_search():
                 LEFT JOIN companies c ON c.id = p.company_id
                 WHERE l.to_email LIKE ? OR l.subject LIKE ? OR l.body LIKE ? OR p.name LIKE ? OR p.email LIKE ? OR c.groupe LIKE ? OR c.site LIKE ?
                 ORDER BY l.id DESC
-                LIMIT ?;
+                LIMIT ? OFFSET ?;
                 ''',
-                (uid, like, like, like, like, like, like, like, limit),
+                (uid, like, like, like, like, like, like, like, limit, offset),
             ).fetchall()
         ]
         candidates = [
@@ -3446,11 +3523,11 @@ def api_search():
             for r in conn.execute(
                 '''
                 SELECT * FROM candidates
-                WHERE owner_id=? AND (name LIKE ? OR role LIKE ? OR location LIKE ? OR tech LIKE ? OR linkedin LIKE ? OR notes LIKE ?)
+                WHERE owner_id=? AND deleted_at IS NULL AND (name LIKE ? OR role LIKE ? OR location LIKE ? OR tech LIKE ? OR linkedin LIKE ? OR notes LIKE ?)
                 ORDER BY COALESCE(updatedAt, createdAt) DESC, id DESC
-                LIMIT ?;
+                LIMIT ? OFFSET ?;
                 ''',
-                (uid, like, like, like, like, like, like, limit),
+                (uid, like, like, like, like, like, like, limit, offset),
             ).fetchall()
         ]
 
@@ -3467,6 +3544,7 @@ def api_search():
             "candidates": len(candidates),
         },
         "limit": limit,
+        "offset": offset,
         # legacy key for backward compatibility
         "push_logs": push_logs,
     }
@@ -4519,6 +4597,7 @@ def api_duplicates_merge():
         conn.execute("UPDATE push_logs SET prospect_id=? WHERE prospect_id=?;", (keep_id, merge_id))
         conn.execute("DELETE FROM prospects WHERE id=? AND owner_id=?;", (merge_id, uid))
 
+    _audit_log("merge_delete", "prospect", merge_id, new_value=str(keep_id))
     return jsonify({"ok": True})
 
 
@@ -4575,6 +4654,7 @@ def api_companies_merge():
         conn.execute("UPDATE prospects SET company_id=? WHERE company_id=? AND owner_id=?;", (keep_id, merge_id, uid))
         conn.execute("DELETE FROM companies WHERE id=? AND owner_id=?;", (merge_id, uid))
 
+    _audit_log("merge_delete", "company", merge_id, new_value=str(keep_id))
     return jsonify({"ok": True})
 
 
@@ -4773,7 +4853,7 @@ def api_export_candidates_csv():
     if not uid:
         return jsonify(ok=False, error="Non authentifié"), 401
     with _conn() as conn:
-        rows = conn.execute("SELECT * FROM candidates WHERE owner_id=? ORDER BY id DESC;", (uid,)).fetchall()
+        rows = conn.execute("SELECT * FROM candidates WHERE owner_id=? AND deleted_at IS NULL ORDER BY id DESC;", (uid,)).fetchall()
     output = BytesIO()
     import io
     text_io = io.TextIOWrapper(output, encoding="utf-8", newline="")
@@ -5344,7 +5424,76 @@ def api_company_update():
     with _conn() as conn:
         conn.execute(f"UPDATE companies SET {sets} WHERE id=? AND owner_id=?;", (*vals, cid_i, uid))
         row = conn.execute("SELECT * FROM companies WHERE id=? AND owner_id=?;", (cid_i, uid)).fetchone()
+    _audit_log("update", "company", cid_i, new_value=json.dumps(fields, ensure_ascii=False))
     return jsonify({"ok": True, "company": dict(row) if row else None})
+
+
+@app.get("/api/audit-log")
+def api_audit_log():
+    """v23.5: Retrieve audit trail. Admin only."""
+    user = _get_current_user()
+    if not user or user.get("role") != "admin":
+        return jsonify(ok=False, error="Admin requis"), 403
+    try:
+        page = max(1, int(request.args.get("page") or 1))
+        limit = min(200, max(1, int(request.args.get("limit") or 50)))
+    except (TypeError, ValueError):
+        page, limit = 1, 50
+    offset = (page - 1) * limit
+    entity = request.args.get("entity")
+    entity_id = request.args.get("entity_id")
+    with _conn() as conn:
+        if entity and entity_id:
+            rows = conn.execute(
+                "SELECT * FROM audit_log WHERE entity=? AND entity_id=? ORDER BY id DESC LIMIT ? OFFSET ?;",
+                (entity, int(entity_id), limit, offset)
+            ).fetchall()
+            total = int(conn.execute("SELECT COUNT(*) FROM audit_log WHERE entity=? AND entity_id=?;", (entity, int(entity_id))).fetchone()[0])
+        elif entity:
+            rows = conn.execute(
+                "SELECT * FROM audit_log WHERE entity=? ORDER BY id DESC LIMIT ? OFFSET ?;",
+                (entity, limit, offset)
+            ).fetchall()
+            total = int(conn.execute("SELECT COUNT(*) FROM audit_log WHERE entity=?;", (entity,)).fetchone()[0])
+        else:
+            rows = conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ? OFFSET ?;", (limit, offset)).fetchall()
+            total = int(conn.execute("SELECT COUNT(*) FROM audit_log;").fetchone()[0])
+    from math import ceil
+    return jsonify(ok=True, logs=[dict(r) for r in rows], pagination={"page": page, "limit": limit, "total": total, "pages": ceil(total / limit) if limit else 1})
+
+
+@app.post("/api/soft-deleted/restore")
+def api_soft_deleted_restore():
+    """v23.5: Restore a soft-deleted entity."""
+    uid = _uid()
+    if not uid:
+        return jsonify(ok=False, error="Non authentifié"), 401
+    payload = request.get_json(force=True, silent=True) or {}
+    entity = payload.get("entity")
+    entity_id = payload.get("id")
+    if entity not in ("prospect", "company", "candidate") or not entity_id:
+        return jsonify(ok=False, error="entity and id required"), 400
+    table = {"prospect": "prospects", "company": "companies", "candidate": "candidates"}[entity]
+    with _conn() as conn:
+        conn.execute(f"UPDATE {table} SET deleted_at=NULL WHERE id=? AND owner_id=?;", (int(entity_id), uid))
+    _audit_log("restore", entity, int(entity_id))
+    return jsonify(ok=True)
+
+
+@app.post("/api/soft-deleted/purge")
+def api_soft_deleted_purge():
+    """v23.5: Permanently delete items soft-deleted more than 30 days ago. Admin only."""
+    user = _get_current_user()
+    if not user or user.get("role") != "admin":
+        return jsonify(ok=False, error="Admin requis"), 403
+    cutoff = (datetime.datetime.now() - datetime.timedelta(days=30)).isoformat(timespec="seconds")
+    purged = {}
+    with _conn() as conn:
+        for tbl in ("prospects", "companies", "candidates"):
+            cur = conn.execute(f"DELETE FROM {tbl} WHERE deleted_at IS NOT NULL AND deleted_at < ?;", (cutoff,))
+            purged[tbl] = cur.rowcount
+    _audit_log("purge", "system", new_value=json.dumps(purged))
+    return jsonify(ok=True, purged=purged)
 
 
 @app.post("/api/company/events/add")
@@ -5555,6 +5704,62 @@ def api_prospects_bulk_field_update():
     return jsonify(ok=True, updated=updated)
 
 
+@app.post("/api/prospects/bulk-status-tags")
+def api_prospects_bulk_status_tags():
+    """v23.5: Bulk update statut and/or tags for selected prospects."""
+    chk = _require_same_origin()
+    if chk:
+        return chk
+    uid = _uid()
+    if not uid:
+        return jsonify(ok=False, error="Non authentifié"), 401
+    payload = request.get_json(force=True, silent=True) or {}
+    ids = payload.get("ids")
+    new_statut = payload.get("statut")  # optional
+    add_tags = payload.get("add_tags")  # optional list of tags to add
+    remove_tags = payload.get("remove_tags")  # optional list of tags to remove
+    if not ids or not isinstance(ids, list):
+        return jsonify(ok=False, error="ids (array) required"), 400
+    if not new_statut and not add_tags and not remove_tags:
+        return jsonify(ok=False, error="statut, add_tags or remove_tags required"), 400
+    updated = 0
+    now = _now_iso()
+    with _conn() as conn:
+        for pid in ids:
+            try:
+                pid = int(pid)
+            except (TypeError, ValueError):
+                continue
+            row = conn.execute("SELECT id, statut, tags FROM prospects WHERE id=? AND owner_id=? AND deleted_at IS NULL;", (pid, uid)).fetchone()
+            if not row:
+                continue
+            sets = []
+            vals = []
+            if new_statut:
+                sets.append("statut=?")
+                vals.append(new_statut)
+            if add_tags or remove_tags:
+                # Parse existing tags
+                raw = row["tags"] or "[]"
+                try:
+                    existing = json.loads(raw) if raw.startswith("[") else [t.strip() for t in raw.split(",") if t.strip()]
+                except Exception:
+                    existing = []
+                if add_tags and isinstance(add_tags, list):
+                    for t in add_tags:
+                        if t and t not in existing:
+                            existing.append(t)
+                if remove_tags and isinstance(remove_tags, list):
+                    existing = [t for t in existing if t not in remove_tags]
+                sets.append("tags=?")
+                vals.append(json.dumps(existing, ensure_ascii=False))
+            vals.extend([pid, uid])
+            conn.execute(f"UPDATE prospects SET {', '.join(sets)} WHERE id=? AND owner_id=?;", vals)
+            updated += 1
+    _audit_log("bulk_status_tags", "prospect", new_value=json.dumps({"ids": ids[:20], "statut": new_statut, "add_tags": add_tags, "remove_tags": remove_tags}, ensure_ascii=False))
+    return jsonify(ok=True, updated=updated)
+
+
 @app.post("/api/ia-enrichment-log")
 def api_ia_enrichment_log():
     """Log an IA enrichment event to the entity's timeline."""
@@ -5657,17 +5862,19 @@ def api_data():
         except (TypeError, ValueError):
             return jsonify(ok=False, error="page/limit must be integers"), 400
         offset = (page - 1) * limit
+        # v23.5: lazy=1 excludes heavy fields (callNotes, notes) for faster list loading
+        lazy = request.args.get("lazy") == "1"
         with _conn() as conn:
             # Companies: always return all (typically small dataset)
             companies = [dict(r) for r in conn.execute(
-                "SELECT * FROM companies WHERE owner_id=? ORDER BY id;", (uid,)
+                "SELECT * FROM companies WHERE owner_id=? AND deleted_at IS NULL ORDER BY id;", (uid,)
             ).fetchall()]
             # Prospects: paginated
             total = int(conn.execute(
-                "SELECT COUNT(*) FROM prospects WHERE owner_id=?;", (uid,)
+                "SELECT COUNT(*) FROM prospects WHERE owner_id=? AND deleted_at IS NULL;", (uid,)
             ).fetchone()[0])
             prospects_rows = conn.execute(
-                "SELECT * FROM prospects WHERE owner_id=? ORDER BY id LIMIT ? OFFSET ?;",
+                "SELECT * FROM prospects WHERE owner_id=? AND deleted_at IS NULL ORDER BY id LIMIT ? OFFSET ?;",
                 (uid, limit, offset)
             ).fetchall()
             max_pid = int(conn.execute(
@@ -5690,10 +5897,15 @@ def api_data():
         prospects = []
         for r in prospects_rows:
             d = dict(r)
-            try:
-                d["callNotes"] = json.loads(d.get("callNotes") or "[]")
-            except Exception:
-                d["callNotes"] = []
+            if lazy:
+                # v23.5: exclude heavy fields for list view performance
+                d.pop("callNotes", None)
+                d.pop("notes", None)
+            else:
+                try:
+                    d["callNotes"] = json.loads(d.get("callNotes") or "[]")
+                except Exception:
+                    d["callNotes"] = []
             t = d.get("tags")
             if t and isinstance(t, str):
                 try:
