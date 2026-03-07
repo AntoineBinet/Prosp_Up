@@ -74,7 +74,7 @@ else:
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_SECURE'] = True   # v23.4: requires HTTPS (Cloudflare Tunnel)
-app.config['PERMANENT_SESSION_LIFETIME'] = datetime.timedelta(days=30)
+app.config['PERMANENT_SESSION_LIFETIME'] = datetime.timedelta(hours=8)  # v23.4: reduced from 30d for security
 
 # v22: Compute content hashes for static assets (auto cache busters)
 _static_hashes: Dict[str, str] = {}
@@ -5646,6 +5646,77 @@ def api_data():
     uid = _uid()
     if uid is None:
         return jsonify(ok=False, error="Non authentifié"), 401
+    # v23.4: Optional pagination via ?page=&limit= query params
+    page_param = request.args.get("page")
+    limit_param = request.args.get("limit")
+    if page_param is not None:
+        # Paginated mode
+        try:
+            page = max(1, int(page_param))
+            limit = min(500, max(1, int(limit_param or 200)))
+        except (TypeError, ValueError):
+            return jsonify(ok=False, error="page/limit must be integers"), 400
+        offset = (page - 1) * limit
+        with _conn() as conn:
+            # Companies: always return all (typically small dataset)
+            companies = [dict(r) for r in conn.execute(
+                "SELECT * FROM companies WHERE owner_id=? ORDER BY id;", (uid,)
+            ).fetchall()]
+            # Prospects: paginated
+            total = int(conn.execute(
+                "SELECT COUNT(*) FROM prospects WHERE owner_id=?;", (uid,)
+            ).fetchone()[0])
+            prospects_rows = conn.execute(
+                "SELECT * FROM prospects WHERE owner_id=? ORDER BY id LIMIT ? OFFSET ?;",
+                (uid, limit, offset)
+            ).fetchall()
+            max_pid = int(conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM prospects WHERE owner_id=?;", (uid,)
+            ).fetchone()[0])
+            max_cid = int(conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM companies WHERE owner_id=?;", (uid,)
+            ).fetchone()[0])
+        # Parse tags/callNotes
+        from math import ceil
+        for c in companies:
+            t = c.get("tags")
+            if t and isinstance(t, str):
+                try:
+                    c["tags"] = json.loads(t)
+                except Exception:
+                    c["tags"] = [x.strip() for x in t.split(",") if x.strip()]
+            elif not t:
+                c["tags"] = []
+        prospects = []
+        for r in prospects_rows:
+            d = dict(r)
+            try:
+                d["callNotes"] = json.loads(d.get("callNotes") or "[]")
+            except Exception:
+                d["callNotes"] = []
+            t = d.get("tags")
+            if t and isinstance(t, str):
+                try:
+                    d["tags"] = json.loads(t)
+                except Exception:
+                    d["tags"] = [x.strip() for x in t.split(",") if x.strip()]
+            elif not t:
+                d["tags"] = []
+            d["is_contact"] = int(d.get("is_contact") or 0)
+            prospects.append(d)
+        return jsonify({
+            "companies": companies,
+            "prospects": prospects,
+            "maxProspectId": max_pid,
+            "maxCompanyId": max_cid,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "pages": ceil(total / limit) if limit else 1,
+            }
+        })
+    # Non-paginated mode (backward compatible)
     payload = read_all(owner_id=uid)
     with _conn() as conn:
         payload["maxProspectId"] = int(conn.execute(
