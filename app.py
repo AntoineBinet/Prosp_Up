@@ -21,10 +21,12 @@ from flask import Flask, jsonify, request, send_from_directory, send_file, redir
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 import secrets
+import hmac
+import base64
 from services.dashboard_goals import build_goals_payload as _build_goals_payload, get_goals_config as _get_goals_config
 
 APP_DIR = Path(__file__).resolve().parent
-APP_VERSION = "23.4"
+APP_VERSION = "24.0"
 import os
 import hashlib
 
@@ -115,6 +117,12 @@ def _after_request(response):
         "font-src 'self'; "
         "frame-ancestors 'self'"
     )
+
+    # ── CORS for mobile JWT auth (v24.0) ──
+    if request.headers.get("Authorization", "").startswith("Bearer ") or request.method == "OPTIONS":
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
 
     # Cache headers for API GET responses (30s private cache)
     if request.path.startswith('/api/') and request.method == 'GET':
@@ -255,16 +263,46 @@ def _require_same_origin():
 @app.before_request
 def _require_auth():
     """Protect all routes except login, static, and favicon.
-    Also enforce CSRF (same-origin) on ALL mutating requests (v23.4)."""
+    Supports both session cookies (web) and JWT Bearer tokens (mobile v24.0).
+    CSRF is enforced for cookie auth; JWT Bearer is inherently CSRF-safe."""
+    # ── CORS preflight ──
+    if request.method == "OPTIONS":
+        return
+
     allowed = ('/login', '/static/', '/favicon.ico', '/api/auth/')
     if any(request.path.startswith(p) for p in allowed):
         return
 
-    # Global CSRF protection on all mutating methods (v23.4)
+    # ── JWT auth (mobile v24.0) ──
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        result = _verify_access_token(token)
+        if result == "expired":
+            return jsonify(ok=False, error="token_expired"), 401
+        if result is None:
+            return jsonify(ok=False, error="invalid_token"), 401
+        # Populate session-like context so _uid() and g.user work transparently
+        g.jwt_user = result
+        g.user = {"id": result["user_id"], "role": result["user_role"],
+                   "display_name": result["user_name"], "username": result["user_name"]}
+        session["user_id"] = result["user_id"]
+        session["user_role"] = result["user_role"]
+        session["user_name"] = result["user_name"]
+        # Reader role check
+        if result["user_role"] == "reader" and request.method in ('POST', 'PUT', 'DELETE'):
+            write_ok = ('/api/auth/', '/api/saved-views')
+            if not any(request.path.startswith(p) for p in write_ok):
+                return jsonify(ok=False, error="Accès en lecture seule"), 403
+        return  # JWT auth OK — skip session & CSRF checks
+
+    # ── CSRF protection on mutations (cookie auth only, v23.4) ──
     if request.method in ('POST', 'PUT', 'DELETE') and request.path.startswith('/api/'):
         chk = _require_same_origin()
         if chk:
             return chk
+
+    # ── Session auth (web, unchanged) ──
     if not session.get('user_id'):
         if request.path.startswith('/api/'):
             return jsonify(ok=False, error="Non authentifié"), 401
@@ -279,6 +317,15 @@ def _require_auth():
         write_ok = ('/api/auth/', '/api/saved-views')  # readers can save their own views
         if not any(request.path.startswith(p) for p in write_ok):
             return jsonify(ok=False, error="Accès en lecture seule"), 403
+
+@app.route("/api/<path:path>", methods=["OPTIONS"])
+def api_cors_preflight(path):
+    """Handle CORS preflight requests for mobile app (v24.0)."""
+    resp = app.make_default_options_response()
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    return resp
 
 @app.context_processor
 def _inject_user():
@@ -325,6 +372,99 @@ def _check_login_rate_limit() -> bool:
 def _record_login_attempt():
     ip = request.remote_addr or "unknown"
     _login_attempts.setdefault(ip, []).append(time.time())
+
+# ── JWT auth helpers (v24.0 — mobile app support) ──────────────────
+# Minimal HS256 JWT implementation (no PyJWT dependency needed)
+_JWT_ACCESS_EXPIRY = 900        # 15 minutes
+_JWT_REFRESH_EXPIRY = 2592000   # 30 days
+
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(s: str) -> bytes:
+    s += "=" * (4 - len(s) % 4)
+    return base64.urlsafe_b64decode(s)
+
+
+def _jwt_encode(payload: dict, secret: str) -> str:
+    """Encode a JWT with HS256."""
+    header = _b64url_encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+    body = _b64url_encode(json.dumps(payload).encode())
+    msg = f"{header}.{body}"
+    sig = hmac.new(secret.encode(), msg.encode(), "sha256").digest()
+    return f"{msg}.{_b64url_encode(sig)}"
+
+
+def _jwt_decode(token: str, secret: str) -> dict | str | None:
+    """Decode and verify a JWT. Returns payload dict, 'expired', or None."""
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        msg = f"{parts[0]}.{parts[1]}"
+        sig = hmac.new(secret.encode(), msg.encode(), "sha256").digest()
+        expected_sig = _b64url_decode(parts[2])
+        if not hmac.compare_digest(sig, expected_sig):
+            return None
+        payload = json.loads(_b64url_decode(parts[1]))
+        if payload.get("exp") and payload["exp"] < int(time.time()):
+            return "expired"
+        return payload
+    except Exception:
+        return None
+
+
+def _generate_access_token(user):
+    """Generate a short-lived JWT access token."""
+    payload = {
+        "user_id": user["id"],
+        "user_role": user["role"],
+        "user_name": user.get("display_name") or user.get("username") or "",
+        "type": "access",
+        "iat": int(time.time()),
+        "exp": int(time.time()) + _JWT_ACCESS_EXPIRY,
+    }
+    return _jwt_encode(payload, app.secret_key)
+
+
+def _generate_refresh_token(user, device=None):
+    """Generate a long-lived refresh token, store its hash in DB."""
+    raw = secrets.token_urlsafe(48)
+    token_hash = hashlib.sha256(raw.encode()).hexdigest()
+    expires_at = (datetime.datetime.now() + datetime.timedelta(seconds=_JWT_REFRESH_EXPIRY)).isoformat(timespec="seconds")
+    with _auth_conn() as conn:
+        conn.execute(
+            "INSERT INTO refresh_tokens (user_id, token_hash, expires_at, device, createdAt) VALUES (?, ?, ?, ?, ?);",
+            (user["id"], token_hash, expires_at, device, datetime.datetime.now().isoformat(timespec="seconds"))
+        )
+    return raw
+
+
+def _verify_access_token(token):
+    """Decode and verify an access token. Returns payload dict, 'expired', or None."""
+    result = _jwt_decode(token, app.secret_key)
+    if isinstance(result, dict) and result.get("type") != "access":
+        return None
+    return result
+
+
+def _verify_refresh_token(raw_token):
+    """Verify a refresh token. Returns user_id or None."""
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+    with _auth_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM refresh_tokens WHERE token_hash=? AND revoked=0;",
+            (token_hash,)
+        ).fetchone()
+    if not row:
+        return None
+    if row["expires_at"] < now_iso:
+        return None
+    return row["user_id"]
+
 
 @app.post("/api/auth/login")
 def api_auth_login():
@@ -403,6 +543,72 @@ def api_auth_onboarding_seen():
 def api_auth_logout():
     session.clear()
     return jsonify(ok=True)
+
+# ── JWT endpoints (v24.0 — mobile app) ─────────────────────────────
+
+@app.post("/api/auth/token")
+def api_auth_token():
+    """Mobile login: returns JWT access + refresh tokens."""
+    if _check_login_rate_limit():
+        return jsonify(ok=False, error="Trop de tentatives. Réessayez dans quelques minutes."), 429
+    payload = request.get_json(force=True, silent=True) or {}
+    username = (payload.get("username") or "").strip().lower()
+    password = payload.get("password") or ""
+    device = payload.get("device")
+    if not username or not password:
+        return jsonify(ok=False, error="Identifiants requis"), 400
+    with _auth_conn() as conn:
+        user = conn.execute("SELECT * FROM users WHERE LOWER(username)=? AND is_active=1;", (username,)).fetchone()
+        if user:
+            pw_ok = check_password_hash(user["password_hash"], password)
+        else:
+            check_password_hash("pbkdf2:sha256:600000$dummy$0" * 2, password)
+            pw_ok = False
+        if not pw_ok:
+            _record_login_attempt()
+            return jsonify(ok=False, error="Identifiants incorrects"), 401
+        user = dict(user)
+        conn.execute("UPDATE users SET lastLoginAt=? WHERE id=?;",
+                     (datetime.datetime.now().isoformat(timespec="seconds"), user["id"]))
+    access = _generate_access_token(user)
+    refresh = _generate_refresh_token(user, device)
+    return jsonify(ok=True, access_token=access, refresh_token=refresh,
+                   expires_in=_JWT_ACCESS_EXPIRY,
+                   user={"id": user["id"], "role": user["role"],
+                         "name": user.get("display_name") or user["username"]})
+
+
+@app.post("/api/auth/refresh")
+def api_auth_refresh():
+    """Renew access token using a valid refresh token."""
+    payload = request.get_json(force=True, silent=True) or {}
+    raw = payload.get("refresh_token")
+    if not raw:
+        return jsonify(ok=False, error="refresh_token requis"), 400
+    user_id = _verify_refresh_token(raw)
+    if not user_id:
+        return jsonify(ok=False, error="Token invalide ou expiré"), 401
+    with _auth_conn() as conn:
+        user = conn.execute("SELECT * FROM users WHERE id=? AND is_active=1;", (user_id,)).fetchone()
+    if not user:
+        return jsonify(ok=False, error="Utilisateur inactif"), 401
+    user = dict(user)
+    access = _generate_access_token(user)
+    return jsonify(ok=True, access_token=access, expires_in=_JWT_ACCESS_EXPIRY)
+
+
+@app.post("/api/auth/revoke")
+def api_auth_revoke():
+    """Revoke a refresh token (mobile logout)."""
+    payload = request.get_json(force=True, silent=True) or {}
+    raw = payload.get("refresh_token")
+    if not raw:
+        return jsonify(ok=False, error="refresh_token requis"), 400
+    token_hash = hashlib.sha256(raw.encode()).hexdigest()
+    with _auth_conn() as conn:
+        conn.execute("UPDATE refresh_tokens SET revoked=1 WHERE token_hash=?;", (token_hash,))
+    return jsonify(ok=True)
+
 
 @app.post("/api/auth/change-password")
 def api_auth_change_password():
@@ -1021,6 +1227,20 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_date ON audit_log(createdAt);
                 is_active    INTEGER DEFAULT 1,
                 createdAt    TEXT,
                 lastLoginAt  TEXT
+            );
+        ''')
+
+        # Refresh tokens for mobile JWT auth (v24.0)
+        conn.executescript('''
+            CREATE TABLE IF NOT EXISTS refresh_tokens (
+                id         INTEGER PRIMARY KEY,
+                user_id    INTEGER NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                expires_at TEXT NOT NULL,
+                revoked    INTEGER DEFAULT 0,
+                device     TEXT,
+                createdAt  TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
             );
         ''')
 
